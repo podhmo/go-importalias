@@ -323,3 +323,49 @@
 ## 気づいたこと
 
 1. `go vet -vettool=` は `-flags`、`-V=full` に加えて、パッケージ解析時に `-json <workdir>/vet.cfg` という2引数形式で vettool を起動する。issue 05 と `docs/draft.md` のスケッチは「`*.cfg` を唯一の引数に取る規約」を前提にしていたが、Go 1.26 の実挙動では `-json` フラグが前置されるため、モード判定は `len(args)==3 && args[1]=="-json" && strings.HasSuffix(args[2], ".cfg")` も vet モードとして扱う必要がある。
+
+---
+
+# 第13回：issue 13 の識別子衝突ケース棚卸しと PRE-23 整理
+
+- **日付**: 2026-07-21
+- **本書の位置づけ**: issue 13（DEC-11.22 識別子衝突判定の精密化）に着手する前に、Go として valid / invalid か、auto-fix で扱うべきか、対応に必要な判定は何かを整理した回。ここで確認した事実は調査ログとして本書に置き、`docs/01decision.pre.md` にはユーザーに何を確認したいかだけを PRE-23 として残す。
+
+## 確認した Go のスコープ事実
+
+1. import name は file block に入る。別 import と同じ import name になる rewrite は invalid。
+2. package-level の `var` / `const` / `type` / `func` と、いずれかのファイルの import name が同名になる package は invalid。これは同一ファイルだけでなく別ファイルでも invalid。
+3. 関数内ローカル宣言は宣言位置以降だけ有効。したがって同一ブロックでも「import 使用 → 後続で同名ローカル変数宣言」は valid だが、「同名ローカル変数宣言 → import 使用」は invalid / 意味破壊になる。
+4. inner block・closure・`init` は特別扱い不要で、通常の lexical scope と宣言位置で判定できる。通常関数・メソッド・closure の parameter、named result、type parameter、method receiver は、その関数 body 内で import name を隠す。
+5. 外側ブロックの同名ローカル変数が closure literal より前で宣言されていれば、closure 内の import 使用も shadow される。closure literal より後の宣言なら、その closure 内からは見えない。
+6. `for` / `if` / `switch` の init statement で宣言された名前は、それぞれの body / case 内で import name を隠す。`range` 変数も loop body 内で隠す。
+7. label、struct field、method name、selector の field/method は通常識別子とは別名前空間なので、import qualifier rename とは衝突しない。ただし method receiver 変数名は通常の parameter と同じく衝突し得る。
+8. predeclared identifier（`len` など）を import alias にすること自体は、ファイル内に既存の builtin 使用がなければ valid。既存の `len(...)` などがあると、alias 後は package name として解決されるため invalid / 意味破壊になる。
+
+## ケース分類
+
+| ケース | Go としての結果 | auto-fix 方針 | 対応に必要な判定 |
+|---|---:|---|---|
+| rename 後の名前が同一ファイルの別 import name と一致 | invalid | skip | file scope の他 `*types.PkgName` を検出 |
+| rename 後の名前が package-level decl と一致（同一/別ファイル） | invalid | skip | package scope の object を検出 |
+| 使用箇所より前に同一/外側 block の同名 local がある | invalid / 意味破壊 | skip | 使用位置で実際に見える object を検出 |
+| 同一 block に同名 local があるが、その宣言は全使用箇所より後 | valid | rewrite 可 | object の宣言位置と使用位置を比較 |
+| inner block 内だけに同名 local があり、import 使用は外側だけ | valid | rewrite 可 | innermost scope からの可視性判定 |
+| inner block / closure 内の import 使用が parameter・local・type parameter・receiver に隠される | invalid / 意味破壊 | skip | function literal を含む通常 scope 判定 |
+| 通常関数・メソッドの引数名、named return、receiver 名、type parameter が import 使用を隠す | invalid / 意味破壊 | skip | 関数 signature が作る scope を使用位置で判定 |
+| `init` 内で同名 local と衝突 | 通常関数と同じ | 通常関数と同じ | 特別扱いせず scope 判定 |
+| `for` / `if` / `switch` init 変数、range 変数と body 内使用が衝突 | invalid / 意味破壊 | skip | statement-created scope の可視性判定 |
+| label / field / method name と同名 | valid | 無視 | `types.Object` の通常スコープに出ないものは衝突扱いしない |
+| rename 後の名前が predeclared identifier で、既存 builtin 使用あり | invalid / 意味破壊 | skip | `types.Universe.Lookup(name)` に解決される `info.Uses` を file 全体で検出 |
+| rename 後の名前が predeclared identifier だが、既存 builtin 使用なし | valid | rewrite 可（ただし保守的に skip も選択肢） | builtin 使用がないことを確認 |
+
+## 気づいたこと
+
+1. **DEC-11.22 の「精密化」は、位置を考慮した scope lookup・package/file block collision・既存 builtin 使用検出の3点に分解できる**。closure・`init`・`for`/`if`/`switch`/`range` は特別な例外ではなく、通常の lexical scope と宣言位置を正しく見ることで同じ仕組みに載せられる。
+2. **部分 rewrite・ローカル識別子側 rename・invalid 入力の救済は、衝突判定の精密化とは別の変換問題になる**。1 import spec の全使用箇所が安全な場合だけ rewrite する、という境界を置くと、DEC-11.22 の実装範囲を「valid input を invalid output にしない」判定に保てる。
+3. **PRE本文にケース表や実験事実を抱え込むと、ユーザーが何を確認すればよいかが見えにくくなる**。ADR-00には`02notice.md`と`01decision.pre.md`の責務分担が書かれていたが、今回のようなケース棚卸しをどちらへ置くかは十分明瞭ではなかったため、ADR-00に「事実・ケース分類はnotice、PREは質問・デフォルト・理由へ要約」と明記した。
+
+## 次にやること
+
+- `docs/01decision.pre.md` の PRE-23 を、上記の調査結果を根拠にした「質問」「推奨（デフォルト）」「理由」「確認後の反映先」の形へ整理した。
+- PRE-23 が確認されたら、`docs/01decision.md` の DEC-11.22 または `docs/issues/13-dec11.22-collision-precision.md` に具体実装範囲として反映する。
