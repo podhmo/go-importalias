@@ -21,4 +21,25 @@
 > - PRE-21（`internal/scan`にも型情報を明示引数として渡す設計をDEC-11.3として拡張すべきか）→ DEC-11.21: 推奨デフォルト通り。第7回時点で実装・テスト済みだった内容をそのままDEC化。
 > - PRE-22（識別子衝突チェックの判定精度）→ DEC-11.22: **推奨デフォルト（現状の保守的な近似を正式仕様として恒久採用）ではなく**、ユーザー判断により「より精密な判定（宣言前後の位置関係・universe scopeとの衝突）へ将来移行する」方針を採用。ただし本ラウンドでは方針の記録のみとし、具体的な実装は別イテレーションに持ち越した（現行の`shape.NameVisibleAt`はそのまま）。
 
-現時点で未解決のPRE項目はない。次のドラフト作業（FR-6.11・FR-6.16・generated file skip・CLI本体の実装、DEC-11.22の精密化着手等）で新たな論点が見つかった際に、本書を再度使う。
+## PRE-23: DEC-11.22 識別子衝突判定の精密化で扱う範囲
+
+**背景**: issue 13 は `shape.NameVisibleAt` の保守的近似を精密化する候補として、(1) 同一ブロック内の宣言前後を区別すること、(2) universe scope（`len` など）との衝突を扱うこと、の 2 点を挙げている。本ラウンドでは実装ではなく、対応する rewrite / 対応しない rewrite の境界を red test として固定する。
+
+**対応可能として扱う候補**:
+
+- **宣言より前の使用箇所だけを書き換えるケース**: 同一ブロック内に rename 後の識別子と同名のローカル変数があっても、そのローカル変数の `types.Object.Pos()` より前にある import qualifier 使用は、Go のスコープ上まだそのローカル変数が見えていないため安全に書き換え可能とみなす。
+- **既存の安全側 skip は維持するケース**: rename 後の識別子が使用箇所で既に見えている場合（宣言後の同一ブロック、外側スコープ、package scope、別 import など）は、これまで通り auto-fix をスキップする。
+- **universe scope との衝突を検出して skip するケース**: rename 後の識別子が `len`・`cap` などの predeclared identifier と一致する場合は、ファイル全体で組み込み識別子を shadow し得るため、現時点では使用有無を問わず auto-fix をスキップする。
+
+**対応が難しい、または今回扱わない候補**:
+
+- **部分 rewrite**: 1 つの import に対する使用箇所の一部だけが安全で、一部が衝突する場合に、安全な箇所だけを書き換えて import を分割・追加するような変換は行わない。1 import spec の rename は全使用箇所が安全な場合だけ適用する。
+- **ローカル識別子側の rename**: import qualifier を通すために既存のローカル変数、関数、型、別 import などを改名する変換は行わない。
+- **universe shadowing の使用箇所精査**: `len` などへの rename が実際に既存の組み込み関数呼び出しを壊すかどうかをファイル全体で精査して条件付き許可することは、今回は扱わない。安全側に一律 skip する。
+
+**追加した red test**:
+
+- `TestApplyToFile_Collision/unaliased_to_alias_declared_after_use_is_safe`: `testdata/fix/collision_decl_after_use`。期待値は rewrite ありだが、現状の `NameVisibleAt` は同一ブロック内の宣言前後を区別しないため `changed=false` になり red。
+- `TestApplyToFile_Collision/unaliased_to_universe_name_is_collision`: `testdata/fix/collision_universe_len`。期待値は rewrite なしだが、現状の `NameVisibleAt` は universe scope を見ないため `changed=true` になり red。
+
+**推奨（デフォルト）**: 上記の「対応可能として扱う候補」を DEC-11.22 の実装範囲とし、「対応が難しい、または今回扱わない候補」は明示的に非対応とする。今回追加したテストは意図的に red のままにし、次イテレーションで `NameVisibleAt` を精密化する際の受け入れ条件として使う。

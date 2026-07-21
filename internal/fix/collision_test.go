@@ -40,6 +40,18 @@ func TestApplyToFile_Collision(t *testing.T) {
 			wantChanged: false,
 		},
 		{
+			name:        "unaliased_to_alias_declared_after_use_is_safe",
+			dir:         "../../testdata/fix/collision_decl_after_use",
+			wantAlias:   "f",
+			wantChanged: true,
+		},
+		{
+			name:        "unaliased_to_universe_name_is_collision",
+			dir:         "../../testdata/fix/collision_universe_len",
+			wantAlias:   "len",
+			wantChanged: false,
+		},
+		{
 			name:        "alias_to_unaliased_collides_with_local_var",
 			dir:         "../../testdata/fix/collision_alias_to_unaliased",
 			wantAlias:   "",

@@ -23,6 +23,22 @@
 - **期待される出力**: `f "fmt"` への変更は行わず、入力と同じ内容のままにする。
 - **根拠 FR・DEC**: FR-6.10、DEC-3.1、DEC-7.2。
 
+## collision_decl_after_use
+
+- **目的**: 同一ブロック内に同名ローカル変数があっても、その宣言より前の import qualifier 使用だけを rename する場合は安全に auto-fix できる、という DEC-11.22 の精密化候補を確認する。
+- **入力の要点**: `fmt.Println` の後にローカル変数 `f` が宣言される。
+- **期待される出力**: import が `f "fmt"` になり、宣言前の `fmt.Println` だけが `f.Println` に書き換わる。
+- **現状**: `shape.NameVisibleAt` が同一ブロック内の宣言前後を区別しないため、現在は red になる想定。
+- **根拠 FR・DEC**: FR-6.10、DEC-3.1、DEC-7.2、DEC-11.22。
+
+## collision_universe_len
+
+- **目的**: import qualifier を predeclared identifier（例: `len`）へ rename する場合は universe scope との衝突として auto-fix をスキップする、という DEC-11.22 の精密化候補を確認する。
+- **入力の要点**: `fmt` が無 alias で import され、`len` へ rename しようとする。
+- **期待される出力**: `len "fmt"` への変更は行わず、入力と同じ内容のままにする。
+- **現状**: `shape.NameVisibleAt` が universe scope を見ないため、現在は red になる想定。
+- **根拠 FR・DEC**: FR-6.10、DEC-3.1、DEC-7.2、DEC-11.22。
+
 ## collision_alias_to_unaliased
 
 - **目的**: alias 付き import を無 alias import へ戻すとローカル識別子と衝突する場合に、危険な auto-fix をスキップできることを確認する。
