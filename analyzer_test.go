@@ -12,6 +12,12 @@ func TestAnalyzer(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), importalias.Analyzer, "dup")
 }
 
+// TestAnalyzer_AliasUsedForMultiplePaths covers FR-6.11: the same alias name
+// mapped to two distinct import paths within a package.
+func TestAnalyzer_AliasUsedForMultiplePaths(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), importalias.Analyzer, "samealias")
+}
+
 // TestAnalyzer_SkipsGeneratedByDefault covers FR-5.7 / DEC-2.4: with the
 // default skip_generated=true, the generated file's minority mapping is not
 // counted, so the package is consistent and nothing is reported.

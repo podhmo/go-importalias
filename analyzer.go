@@ -37,7 +37,7 @@ func run(pass *analysis.Pass) (any, error) {
 		Package:       pass.Pkg.Path(),
 		SkipGenerated: skipGenerated,
 	})
-	decisions := decide.Decide(occs, nil, decide.Options{})
+	decisions, collisions := decide.Decide(occs, nil, decide.Options{})
 
 	for _, d := range decisions {
 		if d.Tie {
@@ -57,6 +57,12 @@ func run(pass *analysis.Pass) (any, error) {
 				pass.Reportf(pos, "%s", msg)
 			}
 		}
+	}
+	for _, c := range collisions {
+		if len(c.Occurrences) == 0 {
+			continue // AliasCollision always has len>=2 Occurrences; zero-value defense only.
+		}
+		pass.Reportf(c.Occurrences[0].Pos, "alias %q is used for multiple import paths in this package", c.Alias)
 	}
 	return nil, nil
 }
