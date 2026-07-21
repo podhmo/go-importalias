@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/podhmo/go-importalias/internal/genfile"
 	"github.com/podhmo/go-importalias/internal/shape"
 )
 
@@ -16,6 +17,12 @@ import (
 type Options struct {
 	// Package is the import path recorded on every resulting Occurrence.
 	Package string
+
+	// SkipGenerated, when true, drops files carrying a generated-code marker
+	// (// Code generated ... DO NOT EDIT., DEC-2.3) so their imports never
+	// become Occurrences (FR-5.7). The default is false here; the caller
+	// (analyzer/CLI) supplies the FR-5.7 "skip by default" policy.
+	SkipGenerated bool
 }
 
 // FromFiles walks the import declarations of files directly via
@@ -36,6 +43,9 @@ type Options struct {
 func FromFiles(fset *token.FileSet, files []*ast.File, typesInfo *types.Info, opts Options) []shape.Occurrence {
 	var occs []shape.Occurrence
 	for _, file := range files {
+		if opts.SkipGenerated && genfile.IsGenerated(file) {
+			continue
+		}
 		isTest := strings.HasSuffix(fset.Position(file.Pos()).Filename, "_test.go")
 		for _, imp := range file.Imports {
 			path, err := strconv.Unquote(imp.Path.Value)
