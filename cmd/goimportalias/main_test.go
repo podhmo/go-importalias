@@ -413,6 +413,176 @@ func A() { fmt.Println("a") }
 `)
 }
 
+func TestCLIFixAppliesRenameAndExitsZero(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import "fmt"
+
+func B() { fmt.Println("b") }
+`,
+		"c.go": `package p
+
+import f "fmt"
+
+func C() { f.Println("c") }
+`,
+	})
+	before := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "-fix", "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 0 {
+		t.Fatalf("goimportalias -fix exit = %d, want 0; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), "b.go: applied import alias fix") {
+		t.Fatalf("stdout = %q, want applied fix message for b.go", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertFileContent(t, filepath.Join(moduleDir, "b.go"), `package p
+
+import f "fmt"
+
+func B() { f.Println("b") }
+`)
+	after := hashGoFiles(t, moduleDir)
+	for _, name := range []string{"a.go", "c.go"} {
+		if after[name] != before[name] {
+			t.Fatalf("%s changed after goimportalias -fix, want unchanged", name)
+		}
+	}
+	if after["b.go"] == before["b.go"] {
+		t.Fatalf("b.go did not change after goimportalias -fix")
+	}
+	assertConfigContent(t, filepath.Join(moduleDir, "importalias.json"), `{
+  "packages": {
+    "example.com/vetfixture": {
+      "fmt": "f"
+    }
+  }
+}
+`)
+}
+
+func TestCLIFixLeavesTieUnchangedAndExitsOne(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import g "fmt"
+
+func B() { g.Println("b") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "-fix", "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias -fix exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), `import "fmt" has unresolved tie among aliases ["f", "g"]`) {
+		t.Fatalf("stdout = %q, want tie diagnostic", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "applied import alias fix") {
+		t.Fatalf("stdout = %q, want no applied fix message", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertGoFileHashes(t, moduleDir, sourceHashes)
+	assertConfigContent(t, filepath.Join(moduleDir, "importalias.json"), `{
+  "packages": {
+    "example.com/vetfixture": {
+      "fmt": [
+        "f",
+        "g"
+      ]
+    }
+  }
+}
+`)
+}
+
+func TestCLIFixLeavesCollisionUnchangedAndExitsOne(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import g "fmt"
+
+func B() {
+	f := "shadow"
+	g.Println(f)
+}
+`,
+		"c.go": `package p
+
+import f "fmt"
+
+func C() { f.Println("c") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "-fix", "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias -fix exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), `should use alias "f", not "g"`) {
+		t.Fatalf("stdout = %q, want remaining diagnostic", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "applied import alias fix") {
+		t.Fatalf("stdout = %q, want no applied fix message", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertGoFileHashes(t, moduleDir, sourceHashes)
+	assertConfigContent(t, filepath.Join(moduleDir, "importalias.json"), `{
+  "packages": {
+    "example.com/vetfixture": {
+      "fmt": "f"
+    }
+  }
+}
+`)
+}
+
 func buildVetTool(t *testing.T) string {
 	t.Helper()
 	tool := filepath.Join(t.TempDir(), "goimportalias")
@@ -499,6 +669,17 @@ func assertConfigContent(t *testing.T, path, want string) {
 	var decoded any
 	if err := json.Unmarshal(got, &decoded); err != nil {
 		t.Fatalf("config %s is invalid JSON: %v", path, err)
+	}
+}
+
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s =\n%s\nwant\n%s", path, got, want)
 	}
 }
 

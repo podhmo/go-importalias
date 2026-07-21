@@ -13,6 +13,7 @@ import (
 
 	importalias "github.com/podhmo/go-importalias"
 	"github.com/podhmo/go-importalias/internal/decide"
+	"github.com/podhmo/go-importalias/internal/fix"
 	"github.com/podhmo/go-importalias/internal/scan"
 	"github.com/podhmo/go-importalias/internal/shape"
 )
@@ -37,7 +38,7 @@ func runCLI(args []string) int {
 	var opts cliOptions
 	fs := flag.NewFlagSet("goimportalias", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	fs.BoolVar(&opts.fix, "fix", false, "apply fixes (declared for future CLI modes; not used by scan mode)")
+	fs.BoolVar(&opts.fix, "fix", false, "apply safe import alias fixes")
 	fs.StringVar(&opts.config, "config", "", "path to importalias.json")
 	fs.BoolVar(&opts.strict, "strict", false, "treat any multiple aliases for the same import path as an unresolved tie")
 	fs.BoolVar(&opts.skipGenerated, "skip-generated", true, "skip files carrying a generated-code marker")
@@ -68,27 +69,28 @@ func runCLI(args []string) int {
 		return 2
 	}
 
-	fset := token.NewFileSet()
-	pkgs, err := packages.Load(&packages.Config{
-		Dir:  cwd,
-		Fset: fset,
-		Mode: packages.NeedName |
-			packages.NeedTypes |
-			packages.NeedTypesInfo |
-			packages.NeedSyntax |
-			packages.NeedImports |
-			packages.NeedDeps,
-	}, patterns...)
+	fset, pkgs, err := loadPackages(cwd, patterns)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goimportalias: load packages: %v\n", err)
 		return 2
 	}
-	if len(pkgs) == 0 {
-		fmt.Fprintln(os.Stderr, "goimportalias: no packages matched")
-		return 2
-	}
 	if n := printPackageErrors(pkgs); n > 0 {
 		return 2
+	}
+
+	if opts.fix {
+		if err := applyFixes(fset, pkgs, cfg, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "goimportalias: %v\n", err)
+			return 2
+		}
+		fset, pkgs, err = loadPackages(cwd, patterns)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "goimportalias: reload packages after fix: %v\n", err)
+			return 2
+		}
+		if n := printPackageErrors(pkgs); n > 0 {
+			return 2
+		}
 	}
 
 	found := false
@@ -121,6 +123,55 @@ func runCLI(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func loadPackages(cwd string, patterns []string) (*token.FileSet, []*packages.Package, error) {
+	fset := token.NewFileSet()
+	pkgs, err := packages.Load(&packages.Config{
+		Dir:  cwd,
+		Fset: fset,
+		Mode: packages.NeedName |
+			packages.NeedTypes |
+			packages.NeedTypesInfo |
+			packages.NeedSyntax |
+			packages.NeedImports |
+			packages.NeedDeps,
+	}, patterns...)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(pkgs) == 0 {
+		return nil, nil, fmt.Errorf("no packages matched")
+	}
+	return fset, pkgs, nil
+}
+
+func applyFixes(fset *token.FileSet, pkgs []*packages.Package, cfg *shape.File, opts cliOptions) error {
+	for _, pkg := range pkgs {
+		if cfg.IgnoresPackage(pkg.PkgPath) {
+			continue
+		}
+		occs := scan.FromFiles(fset, pkg.Syntax, pkg.TypesInfo, scan.Options{
+			Package:       pkg.PkgPath,
+			SkipGenerated: opts.skipGenerated,
+		})
+		decisions, _, _ := decide.Decide(occs, cfg, decide.Options{Strict: opts.strict})
+		for _, file := range pkg.Syntax {
+			src, changed, err := fix.ApplyToFile(fset, file, pkg.TypesInfo, decisions)
+			if err != nil {
+				return err
+			}
+			if !changed {
+				continue
+			}
+			name := fset.Position(file.Pos()).Filename
+			if err := os.WriteFile(name, src, 0o644); err != nil {
+				return fmt.Errorf("write fixed file %s: %w", name, err)
+			}
+			fmt.Fprintf(os.Stdout, "%s: applied import alias fix\n", name)
+		}
+	}
+	return nil
 }
 
 type cliOptions struct {

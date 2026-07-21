@@ -23,7 +23,6 @@
 
 | # | issue | 概要 | 対象 DEC/FR |
 |---|---|---|---|
-| 08 | [cli-fix-apply](./08-cli-fix-apply.md) | CLI `-fix`：auto-fix 適用とファイル書き戻し | FR-7.5〜7.7 / FR-7.18 / DEC-11.7 |
 
 ### auto-fix 拡張（astutil）
 
