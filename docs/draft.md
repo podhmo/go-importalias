@@ -9,6 +9,7 @@
 - 一部の関数シグネチャ・型はこのドラフトのためにその場ででっち上げたもの（特に`internal/shape`・`internal/scan`・`internal/decide`・`internal/fix`）であり、正式なAPIではない。
 - **第2回からの更新**: PRE-1〜PRE-10がすべて`docs/01decision.md`のDEC-11.1〜DEC-11.10として確定した（`internal/model`→`internal/shape`への改名、D1の`pass.Module`経由config読み込み、`internal/fix`への型情報の明示引数渡し、副作用境界、エラー表現、fix実装方針、逐次実行、差分マージ、コード言語、テスト方針）。このドラフトもそれに合わせて更新し、確定した設計の上でさらに一段深く書いてみて新たな論点が無いか確認する（第3回）。
 - **第3回・追記（ビルド検証）**: PRE-11〜PRE-14をDEC-11.11〜DEC-11.14として確定した後、本ドラフト全体（`go.mod`〜`internal/*`まで）を一時ディレクトリに実ファイルとして書き出し、`go build ./...`・`go vet ./...`が両方エラーなく通ることを確認した（依存取得は`go mod tidy`で解決）。各コードブロック直後の確信度タグはこの検証結果を反映して更新済み。ただし`decideOne`・`lookupPkgNameForPath`・`runCLI`は中身が`panic`スタブのままなので、確認できたのは「型・シグネチャ・パッケージ間の配線」レベルであり、実行時の振る舞いはまだ未検証。
+- **第5回・追記**: 「残課題」として持ち越されていたスタブのうち`lookupPkgNameForPath`（`go doc go/types Info`で裏取りして実装）・`scan.Options.Package`の穴埋めは、選択の余地がほぼない実装詳細と判断しその場で解消した。一方`decideOne`（優先順位→多数決→タイ処理）を実際に書き下したところ、(1) config優先順位判定の置き場所、(2) `AliasCollision`が診断位置を全く持てない、(3) 多数決タイが3候補以上になった場合`TieCandidate [2]string`で表現しきれない、という3つの新たな設計原則レベルの論点が見つかった。これらをPRE-15〜PRE-17として`docs/01decision.pre.md`に整理し、ユーザーに確認、`docs/01decision.md`のDEC-11.15〜DEC-11.17として確定した（PRE-17のみ、推奨デフォルト「先頭2件のみ記録」ではなくユーザー判断で「型を可変長にする」が採用された）。確定内容を本ドラフトに反映した上で、本ドラフト全体を再度一時ディレクトリに書き出し、`go build ./...`・`go vet ./...`が両方エラーなく通ることを確認済み。
 
 ---
 
@@ -73,6 +74,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	occs := scan.FromInspector(insp, pass.Fset, scan.Options{
 		SkipGenerated: skipGeneratedFlag,
+		Package:       pass.Pkg.Path(), // 第5回で解消: 1 Pass = 1パッケージなのでここで埋める
 	})
 	// [設計上の仮定] scan.FromInspectorというAPIをでっち上げた。inspectorはノード種別で
 	// フィルタする道具なので、import宣言だけを見るなら普通に pass.Files を
@@ -117,11 +119,13 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 	}
 	for _, c := range collisions {
-		// [設計上の仮定・未検証] AliasCollisionはPosを持たないため、どの位置に
-		// 診断を出すべきかがまだ決まっていない（ファイル単位で最初のOccurrenceの
-		// 位置を使うのか、パッケージ全体に対する診断として特定の位置を持たない
-		// 形にするのか）。このスケッチではpass.Reportf自体を呼べていない。
-		_ = c
+		// DEC-11.16: AliasCollisionはOccurrencesを持ち、先頭要素（＝最初に
+		// 見つかったOccurrence）の位置に診断を出す（該当する全pathの位置に
+		// それぞれ出すべきかまでは踏み込まず、代表1件で十分とした）。
+		if len(c.Occurrences) == 0 {
+			continue // 型としてありえないはずだが、ゼロ値防御として残す
+		}
+		pass.Reportf(c.Occurrences[0].Pos, "alias %q is used for multiple import paths in this package (package-wide majority)", c.Alias)
 	}
 	return nil, nil
 }
@@ -220,11 +224,16 @@ type Occurrence struct {
 // DEC-11.12: FR-6.11（同一alias→複数path）の検出結果はこの型には含めず、
 // 別型 AliasCollision で返す。
 type Decision struct {
-	Package      string
-	Path         string
-	WantAlias    string // 多数決 or 設定ファイルにより「正」とされたalias
-	Tie          bool   // タイで未解決かどうか
-	TieCandidate [2]string
+	Package   string
+	Path      string
+	WantAlias string // 多数決 or 設定ファイルにより「正」とされたalias
+	Tie       bool   // タイで未解決かどうか
+	// DEC-11.17: 3つ以上のaliasが同数タイになるケース（FR-4.6は「最多の組が
+	// 複数存在する場合は自動確定しない」としか言っておらず、2択とは限らない）を
+	// 表現できるよう、固定長[2]stringではなく可変長スライスとする（2要素以上、
+	// アルファベット順）。DEC-2.1のAliasValue.Tie（設定ファイル側の表現）も
+	// 同様に「2要素以上」を許容する形にDEC-11.17で変更した。
+	TieCandidate []string
 	Inconsistent []Occurrence // WantAliasと矛盾する出現（＝診断・auto-fixの対象）
 }
 
@@ -232,10 +241,15 @@ func (d Decision) IsTie() bool { return d.Tie }
 
 // AliasCollision は DEC-11.12 で新設した型。1つの (Package, Alias) の組に
 // 対して複数の異なる import path が対応していたケース (FR-6.11) を表す。
+//
+// DEC-11.16: 第3回時点ではPathsを[]stringとしていたためPosを一切持たず、
+// analyzer.go・CLI出力のどちらからもpass.Reportf相当の診断を出す位置が
+// 原理的に決められなかった。第5回でOccurrences([]Occurrence、各pathにつき
+// 最初に見つかった1件を代表として保持)に置き換えた。
 type AliasCollision struct {
-	Package string
-	Alias   string
-	Paths   []string
+	Package     string
+	Alias       string
+	Occurrences []Occurrence // 各 Path につき代表 1 件（Occurrence.Pathで元のpathを参照できる）
 }
 ```
 
@@ -261,6 +275,7 @@ import (
 
 type Options struct {
 	SkipGenerated bool
+	Package       string // 第5回で追加: 呼び出し元(analyzer.go)が pass.Pkg.Path() を渡す
 }
 
 // FromInspector は1パッケージ分のASTから import 出現 (FR-6.10/6.11/6.16) を集める。
@@ -285,9 +300,10 @@ func FromInspector(insp *inspector.Inspector, fset *token.FileSet, opts Options)
 				alias = imp.Name.Name
 			}
 			occs = append(occs, shape.Occurrence{
-				Path:  path,
-				Alias: alias, // [設計上の仮定] 無aliasは空文字。decide側もこの規約を前提にする必要がある。
-				Pos:   imp.Pos(),
+				Path:    path,
+				Alias:   alias, // [設計上の仮定] 無aliasは空文字。decide側もこの規約を前提にする必要がある。
+				Pos:     imp.Pos(),
+				Package: opts.Package, // 第5回で解消: FromInspector自身がOptions経由で埋める
 			})
 		}
 	})
@@ -307,7 +323,7 @@ func mustUnquote(s string) string {
 }
 ```
 
-`[設計上の仮定]` `Package`フィールド（`shape.Occurrence.Package`）をどこで埋めるかをこの関数の中に書けていない。1パッケージ分のPassを1回のFromInspector呼び出しに対応させるなら、呼び出し側（`analyzer.go`）が後から埋めるのか、`Options`に`PackagePath string`を足すのか、決めていない。（このファイル自体は`go build ./...`でコンパイルは通ることを確認済み。）
+`[設計上の仮定・解消（第5回）]` `Package`フィールドの穴埋め場所を`Options.Package`として決め、`analyzer.go`側が`pass.Pkg.Path()`を渡す形にした。1回の`Analyzer.Run`呼び出しは1パッケージ分のPassに対応するため、迷う余地のある選択肢が実質1つしかなく、質問として起票するほどの揺れではないと判断した。（このファイル自体は`go build ./...`でコンパイルは通ることを確認済み。）
 
 ```
 ================================================================
@@ -319,6 +335,8 @@ File: internal/decide/decide.go
 package decide
 
 import (
+	"sort"
+
 	"github.com/podhmo/go-importalias/internal/shape"
 )
 
@@ -337,52 +355,139 @@ type Options struct {
 // foo/... > * 」をshape側に持たせるかdecide側に持たせるか）は未確定。
 // DEC-11.12: FR-6.10とFR-6.11は別軸の集計として扱い、戻り値も分ける。
 func Decide(occs []shape.Occurrence, cfg *shape.File, opts Options) ([]shape.Decision, []shape.AliasCollision) {
-	byPath := map[string][]shape.Occurrence{} // key = Package + "\x00" + Path
-	byAlias := map[string]map[string]bool{}   // key = Package + "\x00" + Alias -> set of Path
+	type pathKey struct{ pkg, path string }
+	type aliasKey struct{ pkg, alias string }
+
+	byPath := map[pathKey][]shape.Occurrence{}
+	// DEC-11.16: byAliasは(package, alias)ごとに「path -> 代表Occurrence」を
+	// 保持する（第3回まではdistinct pathの集合(map[string]bool)しか持っておらず、
+	// AliasCollisionが位置情報を持てなかった）。
+	byAlias := map[aliasKey]map[string]shape.Occurrence{}
 	for _, o := range occs {
-		pathKey := o.Package + "\x00" + o.Path
-		byPath[pathKey] = append(byPath[pathKey], o)
+		pk := pathKey{o.Package, o.Path}
+		byPath[pk] = append(byPath[pk], o)
 
 		if o.Alias == "" {
 			continue // 無aliasはFR-6.11の対象外（同じ"無alias"は衝突とみなさない）
 		}
-		aliasKey := o.Package + "\x00" + o.Alias
-		if byAlias[aliasKey] == nil {
-			byAlias[aliasKey] = map[string]bool{}
+		ak := aliasKey{o.Package, o.Alias}
+		if byAlias[ak] == nil {
+			byAlias[ak] = map[string]shape.Occurrence{}
 		}
-		byAlias[aliasKey][o.Path] = true
+		if _, ok := byAlias[ak][o.Path]; !ok {
+			byAlias[ak][o.Path] = o // その path で最初に見つかった1件を代表とする
+		}
 	}
 
 	var decisions []shape.Decision
-	for _, group := range byPath {
-		decisions = append(decisions, decideOne(group, cfg, opts))
+	for pk, group := range byPath {
+		decisions = append(decisions, decideOne(pk.pkg, pk.path, group, cfg, opts))
 	}
 
 	var collisions []shape.AliasCollision
-	for key, paths := range byAlias {
-		if len(paths) <= 1 {
+	for ak, byPathOcc := range byAlias {
+		if len(byPathOcc) <= 1 {
 			continue
 		}
-		// [設計上の仮定・未検証] key の分解（Package, Aliasへの逆変換）は
-		// "\x00"での分割で素朴に行える想定だが、このスケッチでは省略した。
-		var pathList []string
-		for p := range paths {
-			pathList = append(pathList, p)
+		paths := make([]string, 0, len(byPathOcc))
+		for p := range byPathOcc {
+			paths = append(paths, p)
 		}
-		_ = key
-		collisions = append(collisions, shape.AliasCollision{Paths: pathList})
+		sort.Strings(paths) // 出力の決定性のため（golden fileテストを見据える）
+		occurrences := make([]shape.Occurrence, 0, len(paths))
+		for _, p := range paths {
+			occurrences = append(occurrences, byPathOcc[p])
+		}
+		collisions = append(collisions, shape.AliasCollision{
+			Package:     ak.pkg,
+			Alias:       ak.alias,
+			Occurrences: occurrences,
+		})
 	}
 	return decisions, collisions
 }
 
-func decideOne(group []shape.Occurrence, cfg *shape.File, opts Options) shape.Decision {
-	// [設計上の仮定・大きく未検証] ここに4.1節の優先順位判定 → 4.2節の多数決 →
-	// 4.3節のタイ処理、を書く想定。
-	panic("not implemented in this sketch")
+// decideOne は4.1節の優先順位（config） → 4.2節の多数決 → 4.3節のタイ処理を
+// 1つの (package, path) の組について適用する。
+//
+// DEC-11.15: 優先順位判定・"foo/..."パターンマッチ自体はcfg.Lookup(pkg, path)
+// （internal/shape側、config.go参照）に委譲する。decideOne自身は「configが
+// 答えを持っていればそれを使い、なければ多数決」という分岐だけを知っていればよい。
+func decideOne(pkg, path string, group []shape.Occurrence, cfg *shape.File, opts Options) shape.Decision {
+	d := shape.Decision{Package: pkg, Path: path}
+
+	if cfg != nil {
+		if v, ok := cfg.Lookup(pkg, path); ok {
+			if v.IsTie() {
+				// FR-4.9/FR-4.10: 設定ファイルに複数候補が並記されている間は
+				// 自動修正しない。config由来のtieはcodeの出現回数によらず優先。
+				d.Tie = true
+				d.TieCandidate = append([]string(nil), v.Tie...)
+				return d
+			}
+			d.WantAlias = v.Resolved
+			for _, o := range group {
+				if o.Alias != d.WantAlias {
+					d.Inconsistent = append(d.Inconsistent, o)
+				}
+			}
+			return d
+		}
+	}
+
+	// FR-4.4〜FR-4.7: 多数決。無alias（""）も1つの候補として通常通り集計する
+	// （FR-4.11/4.12がconfig側では""を意味のある値として扱っているのと同じ規約）。
+	counts := map[string]int{}
+	for _, o := range group {
+		counts[o.Alias]++
+	}
+	var distinct []string
+	for a := range counts {
+		distinct = append(distinct, a)
+	}
+	sort.Strings(distinct) // tie候補の並びを決定的にする
+
+	if opts.Strict && len(distinct) > 1 {
+		// FR-4.7: strictモードでは複数の異なるalias/pathが存在する時点で
+		// 出現回数に関わらず常にタイ扱いとする。DEC-11.17によりdistinctが
+		// 3つ以上あっても全件をそのままTieCandidateに記録できる。
+		d.Tie = true
+		d.TieCandidate = distinct
+		return d
+	}
+
+	maxCount := 0
+	for _, c := range counts {
+		if c > maxCount {
+			maxCount = c
+		}
+	}
+	var winners []string
+	for _, a := range distinct {
+		if counts[a] == maxCount {
+			winners = append(winners, a)
+		}
+	}
+
+	if len(winners) == 1 {
+		d.WantAlias = winners[0]
+		for _, o := range group {
+			if o.Alias != d.WantAlias {
+				d.Inconsistent = append(d.Inconsistent, o)
+			}
+		}
+		return d
+	}
+
+	// FR-4.6: 最多の組が複数存在する場合は自動確定しない。DEC-11.17により
+	// winnersが3つ以上でもそのままTieCandidateに記録できる。
+	d.Tie = true
+	d.TieCandidate = winners
+	return d
 }
 ```
 
-`[設計上の仮定]` このファイルは最も雑い。特に「FR-6.10（同一path→複数alias）」と「FR-6.11（同一alias→複数path）」を1つの集計データ構造でまかなえるのか、2系統に分けるべきかが、実際に書いてみて初めて浮かんだ疑問。`decideOne`は`panic`スタブのままだが、それ以外（`byPath`/`byAlias`の二系統集計、`AliasCollision`の組み立て）を含めてこのファイルが`go build ./...`でコンパイルが通ることは確認済み。
+`[検証済み（コンパイルのみ）／未検証（実行時の動作）]` 第3回までは「FR-6.10」と「FR-6.11」を1つの集計データ構造でまかなえるかが疑問点として残り、`decideOne`は`panic`スタブのままだった。第5回で優先順位（`cfg.Lookup`呼び出し）→多数決→タイ処理まで一通り書き下し、途中で見つかった`cfg.Lookup`の設計（DEC-11.15）・3つ以上の同数タイの表現（DEC-11.17）を確定させた上で反映し、`go build ./...`・`go vet ./...`が通ることを確認した。実際のロジック（多数決の正しさ等）はテストを書いていないため未検証のまま。
 
 ```
 ================================================================
@@ -399,6 +504,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 type File struct {
@@ -418,10 +524,14 @@ type AliasValue struct {
 func (v AliasValue) IsTie() bool      { return len(v.Tie) > 0 }
 func (v AliasValue) IsResolved() bool { return !v.IsTie() }
 
+// DEC-11.17: Tieは2要素固定ではなく、2要素以上（3つ以上の同数タイも表現できる）
+// を許容する。当初(DEC-2.1)は2要素固定だったが、decideOneの実装過程で
+// 3つ以上のaliasが同数タイになりうることが分かり、ユーザー判断で型を
+// 可変長のまま許容する方針に変更した。
 func (v AliasValue) MarshalJSON() ([]byte, error) {
 	if v.IsTie() {
-		if len(v.Tie) != 2 {
-			return nil, fmt.Errorf("tie candidates must have exactly 2 elements, got %d", len(v.Tie))
+		if len(v.Tie) < 2 {
+			return nil, fmt.Errorf("tie candidates must have at least 2 elements, got %d", len(v.Tie))
 		}
 		sorted := append([]string(nil), v.Tie...)
 		sort.Strings(sorted)
@@ -438,10 +548,10 @@ func (v *AliasValue) UnmarshalJSON(data []byte) error {
 	}
 	var arr []string
 	if err := json.Unmarshal(data, &arr); err != nil {
-		return fmt.Errorf("alias value must be a string or a 2-element array: %w", err)
+		return fmt.Errorf("alias value must be a string or an array of 2 or more elements: %w", err)
 	}
-	if len(arr) != 2 {
-		return fmt.Errorf("tie candidates must have exactly 2 elements, got %d", len(arr))
+	if len(arr) < 2 {
+		return fmt.Errorf("tie candidates must have at least 2 elements, got %d", len(arr))
 	}
 	v.Resolved, v.Tie = "", arr
 	return nil
@@ -465,6 +575,51 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return f, nil
+}
+
+// Lookup resolves the FR-4.1〜4.3 scope priority (explicit package path >
+// "foo/..." prefix scope > "*") for a given (pkg, path) pair.
+//
+// DEC-11.15: 優先順位判定・"foo/..."パターンマッチというFR-4.1〜4.3のロジック
+// そのものをinternal/shape側に持たせる（decide.Decideは本メソッドを呼ぶだけで
+// 優先順位を知らなくてよい）。あわせて、複数の"foo/..."スコープが同時に
+// マッチしうる場合（例: "foo/..."と"foo/bar/..."がどちらも"foo/bar/baz"に
+// マッチする）は、最長prefixを優先する（origin.md 5.2節はこのケースを
+// 明記していなかったため、本DECで補った）。
+func (f *File) Lookup(pkg, path string) (AliasValue, bool) {
+	if scoped, ok := f.Packages[pkg]; ok {
+		if v, ok := scoped[path]; ok {
+			return v, true
+		}
+	}
+	var bestPrefix string
+	var bestValue AliasValue
+	found := false
+	for scope, entries := range f.Packages {
+		prefix, isPattern := strings.CutSuffix(scope, "/...")
+		if !isPattern {
+			continue
+		}
+		if pkg != prefix && !strings.HasPrefix(pkg, prefix+"/") {
+			continue
+		}
+		v, ok := entries[path]
+		if !ok {
+			continue
+		}
+		if !found || len(prefix) > len(bestPrefix) {
+			bestPrefix, bestValue, found = prefix, v, true
+		}
+	}
+	if found {
+		return bestValue, true
+	}
+	if scoped, ok := f.Packages["*"]; ok {
+		if v, ok := scoped[path]; ok {
+			return v, true
+		}
+	}
+	return AliasValue{}, false
 }
 
 func Save(path string, f *File) error {
@@ -499,6 +654,8 @@ func Merge(existing, fresh *File) *File {
 
 `[検証済み]` 型定義・Marshal/UnmarshalJSON・Load/Saveの部分は、前回のドラフトで実際に`go build`/`go vet`が通ることを確認済み（ロジックは同一、`package config`→`package shape`・エラー文字列からの`importalias: `プレフィックス除去のみ変更、DEC-11.5・DEC-11.9反映）。`Merge`はDEC-11.8・DEC-11.13で確定した方針通りに実装済みで、今回改めて`internal/shape`パッケージ全体（`model.go`と同居）として`go build ./...`・`go vet ./...`が両方エラーなしで通ることを確認した（エディタのlint（gopls）は`Merge`内の2つの`for`ループを`maps.Copy`に置き換えられると提案してきたが、これは`go vet`のエラーではなくスタイル上の任意の指摘）。
 
+`[検証済み（コンパイルのみ）・確定済み]` `Lookup`は`decide.decideOne`を実際に書こうとして「configの優先順位判定ロジックをどこに書くか」が決まっていないと気づき新設した。置き場所・最長prefix優先の規則ともにDEC-11.15で確定済み。`go build`は通ることを確認した。
+
 ```
 ================================================================
 File: internal/fix/fix.go
@@ -514,6 +671,7 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
+	"strconv"
 
 	"golang.org/x/tools/go/ast/astutil"
 
@@ -592,14 +750,37 @@ func indexSelectorExprsByPkgName(file *ast.File, typesInfo *types.Info) map[*typ
 	return index
 }
 
-// [設計上の仮定・未検証] typesPkg・importのpathからの*types.PkgName逆引きは
-// 型情報のImports()一覧を舐めれば書けるはずだが、このスケッチでは省略した。
+// lookupPkgNameForPath はimport pathから、そのファイル内でのimportの束縛先
+// (*types.PkgName) を逆引きする。
+//
+// [検証済み: go doc go/types Info] *ast.ImportSpec に対応する *types.PkgName は、
+// 明示的なalias付きimportなら typesInfo.Defs[imp.Name] に、無aliasの
+// importなら typesInfo.Implicits[imp] に記録される
+// （go docの Info.Implicits フィールドのコメント: "*ast.ImportSpec  *PkgName
+// for imports without renames" を確認）。ドット importの場合は Defs[imp.Name]
+// が "." という名前のオブジェクトになるはずだが、ドットimportの扱いは
+// このスケッチでは検討していない。
 func lookupPkgNameForPath(file *ast.File, typesInfo *types.Info, path string) *types.PkgName {
-	panic("not implemented in this sketch")
+	for _, imp := range file.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || p != path {
+			continue
+		}
+		if imp.Name != nil {
+			if pn, ok := typesInfo.Defs[imp.Name].(*types.PkgName); ok {
+				return pn
+			}
+			continue
+		}
+		if pn, ok := typesInfo.Implicits[imp].(*types.PkgName); ok {
+			return pn
+		}
+	}
+	return nil
 }
 ```
 
-`[検証済み（コンパイルのみ）／未検証（実行時の動作）]` DEC-11.3/DEC-11.6/DEC-11.14を反映し、型情報を明示引数として受け取る形・事前インデックス化・`types.Info.Uses`による安全確認・`go/format.Node`での書き戻しまで一通り書き、このファイルが`go build ./...`・`go vet ./...`で実際にエラーなく通ることを確認した。ただし実際にサンプルファイルへ通して動作確認はしていない。`lookupPkgNameForPath`（importのpathから対応する`*types.PkgName`を引く部分）は今回のスケッチでも未実装のまま残った、実装時の詰めどころ。
+`[検証済み（コンパイルのみ）／未検証（実行時の動作）]` DEC-11.3/DEC-11.6/DEC-11.14を反映し、型情報を明示引数として受け取る形・事前インデックス化・`types.Info.Uses`による安全確認・`go/format.Node`での書き戻しまで一通り書き、このファイルが`go build ./...`・`go vet ./...`で実際にエラーなく通ることを確認した。`lookupPkgNameForPath`は第5回で`go doc go/types Info`（`Defs`/`Implicits`フィールドの説明）を確認した上で実装し、コンパイルが通ることを確認した。ただし実際にサンプルファイルへ通した動作確認・ドットimportのケースは未検証のまま。
 
 ```
 ================================================================
@@ -671,8 +852,17 @@ DEC-11.1〜DEC-11.10を反映して本ドラフトを書き直す中で、次の
 
 これらを`docs/01decision.pre.md`にPRE-11〜PRE-14として整理し、ユーザーに確認、すべて`docs/01decision.md`のDEC-11.11〜DEC-11.14として確定した（本ドラフトの該当箇所も反映済み）。特にPRE-13（`shape.Merge`の粒度）は、推奨デフォルト（path単位の差分保持）ではなく「package単位で丸ごと置換（消えてよい）」がユーザー判断で採用された点に注意（DEC-11.13）。
 
+## 第5回：残っていたスタブを実装して見つかった新たな論点
+
+- **やったこと**: 第4回の「残課題」に挙げていた`lookupPkgNameForPath`・`analyzer.go`のAliasCollision診断・`decideOne`の3点を実際に書き下した。
+- **`lookupPkgNameForPath`・`scan.Options.Package`**: `go doc go/types Info`で`Implicits`/`Defs`フィールドの仕様を確認した上で実装した。選択の余地がほぼない実装詳細（他に妥当な設計の分岐がない）と判断し、質問化せずその場で解消した。
+- **`decideOne`を書いて新たに見つかった3つの原則レベルの論点**（`docs/01decision.pre.md`のPRE-15〜17として整理・ユーザー確認済み。詳細・確定内容は`docs/01decision.md`のDEC-11.15〜11.17を参照）:
+  1. config優先順位判定（FR-4.1〜4.3・"foo/..."パターンマッチ）のロジックをどこに置くか。
+  2. `AliasCollision`が診断位置（`Pos`）を全く持てず、`analyzer.go`側で報告できないという型設計の不足。
+  3. 多数決タイが3候補以上になった場合、`TieCandidate [2]string`では表現しきれない。
+
 ## 現時点での残課題（次回以降）
 
-- `internal/fix`の`lookupPkgNameForPath`（importのpathから`*types.PkgName`を逆引きする部分）は今回のスケッチでも未実装のまま。
-- `analyzer.go`の`AliasCollision`診断は、`Pos`を持たない`AliasCollision`型をどう`pass.Reportf`に渡すか（診断位置をどう選ぶか）が書けていない。
-- これらは実装着手順（DEC-10.1）の中で、テストハーネス確立後に`testdata/fix/<case>`を都度追加しながら詰めていく対象で問題ないと考えられる（DEC-7.5と同じ「手を動かしながら決める」方針の範囲内）。現時点でユーザーに追加確認が必要な原則レベルの論点は残っていない。
+- `internal/decide`・`internal/fix`はいずれもコンパイルは通るが、テストを一切書いていないため実行時の振る舞い（多数決が本当に正しいか、書き換えが正しく行われるか等）は未検証のまま。
+- `cmd/goimportalias`の`runCLI`は依然として`panic`スタブ。DEC-10.1のステップ順（テストハーネス確立が最優先）に従い、次回以降のドラフトよりも先にテストハーネスの試作へ進むべきタイミングに来ている可能性がある。
+- 現時点でユーザーに追加確認が必要な、新たな原則レベルの論点は残っていない（PRE-15〜17の確認をもって解消）。
