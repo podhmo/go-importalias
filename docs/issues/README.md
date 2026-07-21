@@ -38,7 +38,6 @@
 
 | # | issue | 概要 | 対象 DEC/FR |
 |---|---|---|---|
-| 11 | [docs-fix-cases](./11-docs-fix-cases.md) | `docs/fix-cases.md` 新設・既存ケース明文化 | DEC-7.2 |
 | 12 | [infra-ci-license-readme](./12-infra-ci-license-readme.md) | CI・LICENSE・README | DEC-8.1 / DEC-8.3 / DEC-8.2 |
 
 ### バックログ（v1 必須ではない）
