@@ -1,6 +1,6 @@
 # importalias 実装方針決定書 (Implementation Decisions)
 
-- **バージョン**: v1.3
+- **バージョン**: v1.4
 - **日付**: 2026-07-21
 - **本書の位置づけ**: `docs/00origin.md`（機能仕様書、「何を提供するか」）を受けて、実装に着手するために必要な「どう実装するか」側の決定を、ユーザーとの確認を経て確定する。本書に記載の決定事項は、明示的な理由がない限りそのまま実装のベースラインとしてよい、自己完結した確定記録である。
 - **v1.0からの変更点**: ユーザーとの確認の結果、D1（go vet analyzer）とD2（スタンドアロンCLI）を**単一バイナリ`goimportalias`**として提供する方針に変更した（1.3/1.4節）。これに伴い、OQ-5（FR-6.11ケースのauto-fix）もv1で対応する方針に変更した（3.1節）。
@@ -15,6 +15,11 @@
   - 設定ファイルの再生成は「保持する差分マージ」とする（11.8節）。
   - コード中のコメント・識別子は英語とする（設計文書・CLIメッセージは日本語可）（11.9節）。
   - テストは標準`testing`＋table-driven、`go-cmp`のみ例外許容、`testify`は不採用（11.10節）。
+- **v1.4からの変更点**: v1.3の決定を`docs/draft.md`へ実際に反映する中で見つかった、より細かい適用粒度の論点（第3回）をユーザーと確認し、以下を確定した（詳細は11節）。
+  - `shape.Occurrence.Alias`の無alias表現は空文字とする（11.11節）。
+  - FR-6.11（同一alias→複数path）の検出結果は`shape.Decision`とは別の型・別スライスで返す（11.12節）。
+  - `shape.Merge`は、スキャン範囲に含まれるpackageキーについてはpath単位も含め丸ごと新しい判定結果で置き換える（11.13節）。
+  - `internal/fix`のSelectorExpr走査は1ファイル1回の事前インデックス化とする（11.14節）。
 - **現時点で未確定の論点**: 本書執筆時点で洗い出されていた実装上の論点はすべて本書内で確定済みである。テストスイートの構成・実行方法の細部（7節参照）のように、これ以上の言葉による決定ではなく実装しながらの実験によって詰めるべき事項については、10節（実装着手順）で最初のタスクとして明示する。
 
 ---
@@ -278,3 +283,23 @@ type AliasValue struct {
 
 - **DEC-11.10**: テストコードもDEC-6.1〜6.3と同じ最小依存方針に含める。標準`testing`パッケージ＋`t.Run`によるtable-driven testを基本とし、比較には`reflect.DeepEqual`、または構造体の深い比較（AST・トークン位置を含む）が不便な場合に限り`github.com/google/go-cmp`をテスト専用の例外的な追加依存として許容する。`testify`は導入しない。
   - 理由: 依存を最小限に保つという方針をテストにも一貫させる。ただし`go-cmp`はテスト専用であればモジュールの実行時依存グラフを汚さないため、深い構造体比較の実用性を優先して例外とする。
+
+### 11.11 `shape.Occurrence.Alias`の「無alias」表現
+
+- **DEC-11.11**: `shape.Occurrence.Alias`は、明示的なaliasが書かれていないimportの場合は空文字（`""`）とする。実際の宣言パッケージ名（無aliasの場合の「暗黙のalias」）が必要な箇所は、`go/types`から都度解決する。
+  - 理由: DEC-2.1・FR-4.12がすでに設定ファイルの`AliasValue.Resolved`について「`""`は`aliasなしが正`を意味する」と定めており、`scan`が生成し`decide`が参照する`Occurrence.Alias`も同じ規約（空文字＝無alias）に揃える方が一貫し、二重の規約を持たずに済む。
+
+### 11.12 FR-6.11（同一alias・複数path）の検出結果の型
+
+- **DEC-11.12**: `internal/decide`は、FR-6.10（同一path→複数alias、`shape.Decision`が担う）とFR-6.11（同一alias→複数path）を別軸の検出結果として扱う。後者は`shape.Decision`には持たせず、`shape.AliasCollision{Package, Alias string; Paths []string}`のような別型・別スライスとして返す（例: `decide.Decide`は`([]shape.Decision, []shape.AliasCollision, error)`を返す）。
+  - 理由: `Decision`は「(Package, Path)の組について何のaliasを使うべきか」という1軸の判定を表す型として単純に保ち、「1つのaliasに複数pathが対応している」という別軸の検出結果を無理に同じ型に押し込まない方が、それぞれの型の責務が明確になる。
+
+### 11.13 `shape.Merge`の適用粒度
+
+- **DEC-11.13**: `shape.Merge`は、今回のスキャン範囲に含まれるpackageキーについては、そのpackage内のpathエントリも含めて新しい判定結果（fresh）で丸ごと置き換える（path単位での差分保持はしない）。スキャン範囲に含まれないpackageキーはDEC-11.8の通りそのまま残す。
+  - 理由: 設定ファイル（`importalias.json`）は本来「今スキャン範囲内で本当に必要な内容だけが載っている」状態が理想であり、使われなくなったimportの古いtie記録・alias指定を残し続けるのは望ましくない。一時的な検出漏れ（ビルドタグで除外されたファイル等）で設定が失われるリスクよりも、設定ファイルを可能な限り最小限に保つことを優先する。`ignore`（5.7節）は本決定の対象外（package/pathのマージとは別の扱いのため、DEC-11.8同様スキャン結果によらず保持される）。
+
+### 11.14 `internal/fix`のSelectorExpr走査の設計
+
+- **DEC-11.14**: `internal/fix`は、SelectorExprの走査を1ファイルにつき1回だけ行い、`file.Imports`と`typesInfo.Uses`から「importの束縛先（`*types.PkgName`）ごとのSelectorExprリスト」を事前にインデックス化する（例: `map[*types.PkgName][]*ast.SelectorExpr`）。各`Decision`の適用ループでは、このインデックスを引くだけにする。
+  - 理由: 素朴に`Decision`ごとに毎回ファイル全体のSelectorExprを走査すると、1ファイルに複数の書き換え対象importがある場合にDecision数×ファイルサイズのオーダーになる。事前インデックス化すれば線形で済み、「収集」と「適用」の責務も分離できて実装の見通しがよい。

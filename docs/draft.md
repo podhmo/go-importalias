@@ -8,6 +8,7 @@
   - `[設計上の仮定]` … ここで初めて「こうであるはず」と勝手に置いた設計判断。`docs/01decision.pre.md`の質問の元ネタになっている。
 - 一部の関数シグネチャ・型はこのドラフトのためにその場ででっち上げたもの（特に`internal/shape`・`internal/scan`・`internal/decide`・`internal/fix`）であり、正式なAPIではない。
 - **第2回からの更新**: PRE-1〜PRE-10がすべて`docs/01decision.md`のDEC-11.1〜DEC-11.10として確定した（`internal/model`→`internal/shape`への改名、D1の`pass.Module`経由config読み込み、`internal/fix`への型情報の明示引数渡し、副作用境界、エラー表現、fix実装方針、逐次実行、差分マージ、コード言語、テスト方針）。このドラフトもそれに合わせて更新し、確定した設計の上でさらに一段深く書いてみて新たな論点が無いか確認する（第3回）。
+- **第3回・追記（ビルド検証）**: PRE-11〜PRE-14をDEC-11.11〜DEC-11.14として確定した後、本ドラフト全体（`go.mod`〜`internal/*`まで）を一時ディレクトリに実ファイルとして書き出し、`go build ./...`・`go vet ./...`が両方エラーなく通ることを確認した（依存取得は`go mod tidy`で解決）。各コードブロック直後の確信度タグはこの検証結果を反映して更新済み。ただし`decideOne`・`lookupPkgNameForPath`・`runCLI`は中身が`panic`スタブのままなので、確認できたのは「型・シグネチャ・パッケージ間の配線」レベルであり、実行時の振る舞いはまだ未検証。
 
 ---
 
@@ -98,7 +99,8 @@ func run(pass *analysis.Pass) (any, error) {
 			cfg = loaded
 		}
 	}
-	decisions := decide.Decide(occs, cfg, decide.Options{Strict: strictFlag})
+	// DEC-11.12: decide.Decideの戻り値はDecisionとAliasCollisionに分かれる。
+	decisions, collisions := decide.Decide(occs, cfg, decide.Options{Strict: strictFlag})
 
 	for _, d := range decisions {
 		if d.IsTie() {
@@ -114,11 +116,18 @@ func run(pass *analysis.Pass) (any, error) {
 			// [検証済み] pass.Reportf(pos token.Pos, format string, args ...any) は実在するAPI。
 		}
 	}
+	for _, c := range collisions {
+		// [設計上の仮定・未検証] AliasCollisionはPosを持たないため、どの位置に
+		// 診断を出すべきかがまだ決まっていない（ファイル単位で最初のOccurrenceの
+		// 位置を使うのか、パッケージ全体に対する診断として特定の位置を持たない
+		// 形にするのか）。このスケッチではpass.Reportf自体を呼べていない。
+		_ = c
+	}
 	return nil, nil
 }
 ```
 
-`[未検証]` `analysis.Analyzer`・`inspect.Analyzer`・`inspector.Inspector`・`pass.Reportf`は実在を`go doc`で確認したが、この`run`関数自体を実際にコンパイル・実行してはいない。
+`[検証済み（コンパイルのみ）]` この`analyzer.go`を含む本ドラフト全体（`go.mod`〜`internal/*`まで）を一時ディレクトリに書き出し、`go build ./...`・`go vet ./...`が両方エラーなく通ることを確認した。ただし`decideOne`・`lookupPkgNameForPath`・`runCLI`は`panic("not implemented in this sketch")`で中身が空のため、これは「型・シグネチャ・パッケージ間の配線が矛盾なく繋がる」ことの確認であり、実行時の振る舞い（実際に診断が正しく出るか等）はまだ未検証。
 
 ```
 ================================================================
@@ -181,7 +190,7 @@ func runCLI(args []string) int {
 }
 ```
 
-`[未検証]` `unitchecker.Main`のシグネチャ（`func Main(analyzers ...*analysis.Analyzer)`、戻り値なし＝内部で`os.Exit`する）はソースで確認済み。モード分岐の実際の判定条件は未検証（DEC-1.4自身が「実装時に実挙動を見て固める」としている部分）。
+`[検証済み（コンパイルのみ）]` `unitchecker.Main`のシグネチャ（`func Main(analyzers ...*analysis.Analyzer)`、戻り値なし＝内部で`os.Exit`する）はソースで確認済み、かつこの`main.go`が`go build ./...`で実際に通ることも確認した（`runCLI`はまだ`panic`スタブ）。モード分岐の実際の判定条件は未検証のまま（DEC-1.4自身が「実装時に実挙動を見て固める」としている部分）。
 
 ```
 ================================================================
@@ -200,15 +209,16 @@ import "go/token"
 // Occurrence は「あるファイルのある位置で、あるimport pathがあるaliasで
 // importされていた」という1件の生データ (FR-6.10/FR-6.11の検出対象そのもの)。
 type Occurrence struct {
-	Path  string // import path (例: "github.com/pkg/errors")
-	Alias string // 実際に使われていたalias。無aliasなら宣言パッケージ名と一致する文字列を入れるのか、
-	// 空文字にして「無alias」を表すのかは [設計上の仮定・要検討]。
+	Path    string // import path (例: "github.com/pkg/errors")
+	Alias   string // DEC-11.11: 無aliasの場合は空文字（DEC-2.1/FR-4.12と同じ規約）
 	Pos     token.Pos
 	Package string // パッケージパス（決定ロジックの集計単位）
 	IsTest  bool   // _test.go 由来かどうか（FR-6.17: 合算するので実質未使用になるかもしれない）
 }
 
 // Decision は decide パッケージが1つの (Package, Path) 組について下した判定結果。
+// DEC-11.12: FR-6.11（同一alias→複数path）の検出結果はこの型には含めず、
+// 別型 AliasCollision で返す。
 type Decision struct {
 	Package      string
 	Path         string
@@ -219,9 +229,17 @@ type Decision struct {
 }
 
 func (d Decision) IsTie() bool { return d.Tie }
+
+// AliasCollision は DEC-11.12 で新設した型。1つの (Package, Alias) の組に
+// 対して複数の異なる import path が対応していたケース (FR-6.11) を表す。
+type AliasCollision struct {
+	Package string
+	Alias   string
+	Paths   []string
+}
 ```
 
-`[設計上の仮定・要検討]` パッケージの置き場所（`internal/shape`）自体はDEC-11.1で確定済み。残る論点は`Occurrence.Alias`の「無alias」表現（空文字 vs 宣言パッケージ名と一致する文字列）で、これはまだどのDEC-にも明文化されていない。次回の`docs/01decision.pre.md`候補。
+`[検証済み・確定済み]` パッケージの置き場所（`internal/shape`）はDEC-11.1、`Occurrence.Alias`の無alias表現はDEC-11.11、`AliasCollision`の新設はDEC-11.12でそれぞれ確定済み。このファイル自体も`go build ./...`で実際にコンパイルが通ることを確認した。
 
 ```
 ================================================================
@@ -289,7 +307,7 @@ func mustUnquote(s string) string {
 }
 ```
 
-`[設計上の仮定]` `Package`フィールド（`shape.Occurrence.Package`）をどこで埋めるかをこの関数の中に書けていない。1パッケージ分のPassを1回のFromInspector呼び出しに対応させるなら、呼び出し側（`analyzer.go`）が後から埋めるのか、`Options`に`PackagePath string`を足すのか、決めていない。
+`[設計上の仮定]` `Package`フィールド（`shape.Occurrence.Package`）をどこで埋めるかをこの関数の中に書けていない。1パッケージ分のPassを1回のFromInspector呼び出しに対応させるなら、呼び出し側（`analyzer.go`）が後から埋めるのか、`Options`に`PackagePath string`を足すのか、決めていない。（このファイル自体は`go build ./...`でコンパイルは通ることを確認済み。）
 
 ```
 ================================================================
@@ -317,21 +335,17 @@ type Options struct {
 // shape側に「Lookup(pkg, path string) (alias string, ok bool)」のような
 // 問い合わせ用メソッドを生やすのか（優先順位＝FR-4.1〜4.3の「明示パッケージ名 >
 // foo/... > * 」をshape側に持たせるかdecide側に持たせるか）は未確定。
-func Decide(occs []shape.Occurrence, cfg *shape.File, opts Options) []shape.Decision {
-	// [設計上の仮定・第3回で判明] FR-6.10（同一path→複数alias）とFR-6.11
-	// （同一alias→複数path）は、path方向のグルーピングだけでは同時にカバー
-	// できない。ここでは2系統の集計を分けて持つ設計にしてみた:
-	//   - byPath: (Package, Path) -> []Occurrence  … FR-6.10・4.1〜4.3の主判定
-	//   - byAlias: (Package, Alias) -> map[Path]bool … FR-6.11の重複検出専用
-	// byAliasの結果をどうDecision型（現状Path単位の構造）に落とし込むかが
-	// まだ決まっていない。Decisionにdistinct fieldを足すのか、別のスライスで
-	// 返すのか（例えば []AliasCollision のような新型）は未確定のまま。
+// DEC-11.12: FR-6.10とFR-6.11は別軸の集計として扱い、戻り値も分ける。
+func Decide(occs []shape.Occurrence, cfg *shape.File, opts Options) ([]shape.Decision, []shape.AliasCollision) {
 	byPath := map[string][]shape.Occurrence{} // key = Package + "\x00" + Path
 	byAlias := map[string]map[string]bool{}   // key = Package + "\x00" + Alias -> set of Path
 	for _, o := range occs {
 		pathKey := o.Package + "\x00" + o.Path
 		byPath[pathKey] = append(byPath[pathKey], o)
 
+		if o.Alias == "" {
+			continue // 無aliasはFR-6.11の対象外（同じ"無alias"は衝突とみなさない）
+		}
 		aliasKey := o.Package + "\x00" + o.Alias
 		if byAlias[aliasKey] == nil {
 			byAlias[aliasKey] = map[string]bool{}
@@ -339,13 +353,26 @@ func Decide(occs []shape.Occurrence, cfg *shape.File, opts Options) []shape.Deci
 		byAlias[aliasKey][o.Path] = true
 	}
 
-	var out []shape.Decision
+	var decisions []shape.Decision
 	for _, group := range byPath {
-		out = append(out, decideOne(group, cfg, opts))
+		decisions = append(decisions, decideOne(group, cfg, opts))
 	}
-	// [未実装] byAlias の結果（FR-6.11: 1つのaliasに複数のpathが対応している
-	// ケース）を out にどう反映するかが、このスケッチではまだ書けていない。
-	return out
+
+	var collisions []shape.AliasCollision
+	for key, paths := range byAlias {
+		if len(paths) <= 1 {
+			continue
+		}
+		// [設計上の仮定・未検証] key の分解（Package, Aliasへの逆変換）は
+		// "\x00"での分割で素朴に行える想定だが、このスケッチでは省略した。
+		var pathList []string
+		for p := range paths {
+			pathList = append(pathList, p)
+		}
+		_ = key
+		collisions = append(collisions, shape.AliasCollision{Paths: pathList})
+	}
+	return decisions, collisions
 }
 
 func decideOne(group []shape.Occurrence, cfg *shape.File, opts Options) shape.Decision {
@@ -355,7 +382,7 @@ func decideOne(group []shape.Occurrence, cfg *shape.File, opts Options) shape.De
 }
 ```
 
-`[設計上の仮定]` このファイルは最も雑い。特に「FR-6.10（同一path→複数alias）」と「FR-6.11（同一alias→複数path）」を1つの集計データ構造でまかなえるのか、2系統に分けるべきかが、実際に書いてみて初めて浮かんだ疑問。
+`[設計上の仮定]` このファイルは最も雑い。特に「FR-6.10（同一path→複数alias）」と「FR-6.11（同一alias→複数path）」を1つの集計データ構造でまかなえるのか、2系統に分けるべきかが、実際に書いてみて初めて浮かんだ疑問。`decideOne`は`panic`スタブのままだが、それ以外（`byPath`/`byAlias`の二系統集計、`AliasCollision`の組み立て）を含めてこのファイルが`go build ./...`でコンパイルが通ることは確認済み。
 
 ```
 ================================================================
@@ -449,32 +476,28 @@ func Save(path string, f *File) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// Merge combines a freshly-scanned File into an existing one, per DEC-11.8's
-// "preserve merge": package-scope keys present in fresh overwrite the
-// corresponding entry in existing; package-scope keys absent from fresh
-// (out of this scan's scope) are carried over from existing unchanged.
-//
-// [設計上の仮定・第3回で新たに判明] DEC-11.8は「スキャン範囲外のpackageキー」
-// の扱いは決めたが、「スキャン範囲内のpackageキーの中で、特定のimport pathが
-// 今回freshに現れなかった場合」（例えばimport自体が削除された、あるいは
-// tieが解消されて設定ファイルへの記載が不要になった等）の扱いまでは決めて
-// いない。ここでは「freshのpackageキーはexistingの同キーをまるごと置き換える」
-// という単純な方式で実装してみたが、これだと「同じpackage内の他のimport path
-// に対する既存のtie候補指定」まで一緒に消えてしまう。これは要確認の新論点。
+// Merge combines a freshly-scanned File into an existing one.
+// DEC-11.8: package-scope keys present in fresh overwrite the corresponding
+// entry in existing; package-scope keys absent from fresh (out of this
+// scan's scope) are carried over from existing unchanged.
+// DEC-11.13: within a package key present in fresh, the whole entry
+// (including per-path entries not re-observed by this scan) is replaced —
+// stale entries for imports that no longer exist are dropped on purpose,
+// since the config file is meant to hold only what's currently needed.
 func Merge(existing, fresh *File) *File {
 	out := NewFile()
 	for pkg, entries := range existing.Packages {
 		out.Packages[pkg] = entries
 	}
 	for pkg, entries := range fresh.Packages {
-		out.Packages[pkg] = entries // package全体を置き換える。上記コメント参照。
+		out.Packages[pkg] = entries // DEC-11.13: package全体を置き換える
 	}
 	out.Ignore = existing.Ignore
 	return out
 }
 ```
 
-`[検証済み]` 型定義・Marshal/UnmarshalJSON・Load/Saveの部分は、前回のドラフトで実際に`go build`/`go vet`が通ることを確認済み（ロジックは同一、`package config`→`package shape`・エラー文字列からの`importalias: `プレフィックス除去のみ変更、DEC-11.5・DEC-11.9反映）。`Merge`はDEC-11.8の方針で実装してみたが、上記コメントの通りpackage内のpath単位の粒度で新たな未決事項が見つかった。
+`[検証済み]` 型定義・Marshal/UnmarshalJSON・Load/Saveの部分は、前回のドラフトで実際に`go build`/`go vet`が通ることを確認済み（ロジックは同一、`package config`→`package shape`・エラー文字列からの`importalias: `プレフィックス除去のみ変更、DEC-11.5・DEC-11.9反映）。`Merge`はDEC-11.8・DEC-11.13で確定した方針通りに実装済みで、今回改めて`internal/shape`パッケージ全体（`model.go`と同居）として`go build ./...`・`go vet ./...`が両方エラーなしで通ることを確認した（エディタのlint（gopls）は`Merge`内の2つの`for`ループを`maps.Copy`に置き換えられると提案してきたが、これは`go vet`のエラーではなくスタイル上の任意の指摘）。
 
 ```
 ================================================================
@@ -512,29 +535,24 @@ import (
 // [検証済み] astutil.AddNamedImport / astutil.DeleteNamedImport は実在するAPI
 // （golang.org/x/tools v0.48.0で go doc により確認）。
 //
-// [設計上の仮定・未検証] SelectorExpr の書き換え判定は
-// `typesInfo.Uses[sel.X.(*ast.Ident)] == expectedPkgName`（対象importが
-// 束縛する *types.PkgName と一致するか）で行える見込みだが、実際に
-// go/packages でロードしたASTに対して動かして確認してはいない。
+// DEC-11.14: SelectorExprの走査は1ファイルにつき1回だけ行い、importの
+// 束縛先(*types.PkgName)ごとのSelectorExprリストを事前にインデックス化する。
+// Decisionごとのループではこのインデックスを引くだけにし、ファイル全体の
+// 再走査を避ける。
 func ApplyToFile(fset *token.FileSet, file *ast.File, typesInfo *types.Info, typesPkg *types.Package, decisions []shape.Decision) (changed bool, err error) {
+	selByPkgName := indexSelectorExprsByPkgName(file, typesInfo)
+
 	for _, d := range decisions {
 		if d.IsTie() {
 			continue // FR-7.6: タイ未解決の対象はauto-fix対象外
 		}
-		for _, occ := range findOccurrencesOf(file, d) {
-			for _, sel := range findSelectorExprs(file) {
-				ident, ok := sel.X.(*ast.Ident)
-				if !ok {
-					continue
-				}
-				pkgName, ok := typesInfo.Uses[ident].(*types.PkgName)
-				if !ok || pkgName.Imported().Path() != d.Path {
-					continue // 別のimportか、importではない識別子を指している
-				}
-				sel.X = ast.NewIdent(d.WantAlias)
-				changed = true
-			}
-			_ = occ
+		pkgName := lookupPkgNameForPath(file, typesInfo, d.Path)
+		if pkgName == nil {
+			continue // このファイルには対象importが無い
+		}
+		for _, sel := range selByPkgName[pkgName] {
+			sel.X = ast.NewIdent(d.WantAlias)
+			changed = true
 		}
 		// [設計上の仮定] astutil.DeleteNamedImport(fset, file, oldAlias, d.Path) →
 		// astutil.AddNamedImport(fset, file, d.WantAlias, d.Path) という
@@ -553,20 +571,35 @@ func ApplyToFile(fset *token.FileSet, file *ast.File, typesInfo *types.Info, typ
 	return true, nil
 }
 
-func findOccurrencesOf(file *ast.File, d shape.Decision) []shape.Occurrence { return d.Inconsistent }
-func findSelectorExprs(file *ast.File) []*ast.SelectorExpr {
-	var out []*ast.SelectorExpr
+// indexSelectorExprsByPkgName は DEC-11.14 のインデックス構築を1ファイル
+// につき1回だけ行う。
+func indexSelectorExprsByPkgName(file *ast.File, typesInfo *types.Info) map[*types.PkgName][]*ast.SelectorExpr {
+	index := map[*types.PkgName][]*ast.SelectorExpr{}
 	ast.Inspect(file, func(n ast.Node) bool {
-		if sel, ok := n.(*ast.SelectorExpr); ok {
-			out = append(out, sel)
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if pkgName, ok := typesInfo.Uses[ident].(*types.PkgName); ok {
+			index[pkgName] = append(index[pkgName], sel)
 		}
 		return true
 	})
-	return out
+	return index
+}
+
+// [設計上の仮定・未検証] typesPkg・importのpathからの*types.PkgName逆引きは
+// 型情報のImports()一覧を舐めれば書けるはずだが、このスケッチでは省略した。
+func lookupPkgNameForPath(file *ast.File, typesInfo *types.Info, path string) *types.PkgName {
+	panic("not implemented in this sketch")
 }
 ```
 
-`[設計上の仮定・未検証]` DEC-11.3/DEC-11.6を反映し、型情報を明示引数として受け取る形・`types.Info.Uses`による安全確認・`go/format.Node`での書き戻しまで一通り書けたが、実際にサンプルファイルへ通して動作確認はしていない。特に`findOccurrencesOf`と`findSelectorExprs`の組み合わせ方（本来は同一importに属する複数のSelectorExprだけを対象に絞り込むべきで、このスケッチでは全SelectorExprを毎回舐めていて非効率かつ他importの識別子も誤って書き換えかねない）はさらに整理が要る、実装時の詰めどころ。
+`[検証済み（コンパイルのみ）／未検証（実行時の動作）]` DEC-11.3/DEC-11.6/DEC-11.14を反映し、型情報を明示引数として受け取る形・事前インデックス化・`types.Info.Uses`による安全確認・`go/format.Node`での書き戻しまで一通り書き、このファイルが`go build ./...`・`go vet ./...`で実際にエラーなく通ることを確認した。ただし実際にサンプルファイルへ通して動作確認はしていない。`lookupPkgNameForPath`（importのpathから対応する`*types.PkgName`を引く部分）は今回のスケッチでも未実装のまま残った、実装時の詰めどころ。
 
 ```
 ================================================================
@@ -612,7 +645,7 @@ func IsGenerated(src []byte) bool {
 }
 ```
 
-`[未検証]` ロジックとしては素直だが、実際にサンプルファイルを通していない。
+`[検証済み（コンパイルのみ）／未検証（実際の判定ロジック）]` `go build ./...`・`go vet ./...`は通ることを確認したが、ロジック自体（`IsGenerated`が実際にサンプルファイルを正しく判定できるか）は未検証。
 
 ---
 
@@ -636,4 +669,10 @@ DEC-11.1〜DEC-11.10を反映して本ドラフトを書き直す中で、次の
 3. **`shape.Merge`のpackage内の粒度**（`internal/shape/config.go`）: DEC-11.8は「スキャン範囲外のpackageキー」の扱いを決めたが、「スキャン範囲**内**のpackageキーの中で、特定のimport pathが今回freshに現れなかった場合」（importが削除された、tieが解消された等）に既存のtie候補指定ごと消してよいかは未決。
 4. **`internal/fix`のSelectorExpr走査範囲**（`internal/fix/fix.go`）: `types.Info.Uses`で安全確認する設計自体はDEC-11.6で確定したが、実際に書くと「ファイル全体のSelectorExprを毎回舐める」素朴な実装は非効率かつ書き換え漏れ・誤爆のリスクがある。対象importに紐づくSelectorExprだけを事前に絞り込む設計が必要そうだが未設計。
 
-これらは前回までの「パッケージ間のデータフロー」レベルの大きな穴とは異なり、より細かい粒度の仕様確定待ち事項のため、次回`docs/01decision.pre.md`に**PRE-11〜PRE-14**として追記するか、あるいは実装しながら`docs/fix-cases.md`的な形で都度確定させる（DEC-7.5と同じ「手を動かしながら決める」方針の対象にする）か、方針そのものをユーザーに確認したい。
+これらを`docs/01decision.pre.md`にPRE-11〜PRE-14として整理し、ユーザーに確認、すべて`docs/01decision.md`のDEC-11.11〜DEC-11.14として確定した（本ドラフトの該当箇所も反映済み）。特にPRE-13（`shape.Merge`の粒度）は、推奨デフォルト（path単位の差分保持）ではなく「package単位で丸ごと置換（消えてよい）」がユーザー判断で採用された点に注意（DEC-11.13）。
+
+## 現時点での残課題（次回以降）
+
+- `internal/fix`の`lookupPkgNameForPath`（importのpathから`*types.PkgName`を逆引きする部分）は今回のスケッチでも未実装のまま。
+- `analyzer.go`の`AliasCollision`診断は、`Pos`を持たない`AliasCollision`型をどう`pass.Reportf`に渡すか（診断位置をどう選ぶか）が書けていない。
+- これらは実装着手順（DEC-10.1）の中で、テストハーネス確立後に`testdata/fix/<case>`を都度追加しながら詰めていく対象で問題ないと考えられる（DEC-7.5と同じ「手を動かしながら決める」方針の範囲内）。現時点でユーザーに追加確認が必要な原則レベルの論点は残っていない。

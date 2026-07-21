@@ -75,3 +75,21 @@
 
 - 上記4点を新たな`docs/01decision.pre.md`（PRE-11〜PRE-14）として整理するか、あるいはDEC-7.5と同じ「実装しながら都度確定させる」対象にするかを、ユーザーに確認する。
 - 保留：`02notice.md`自体の構成見直し（第2回から持ち越し）。
+
+---
+
+# 第4回：PRE-11〜PRE-14確定後のビルド検証
+
+- **日付**: 2026-07-21（同日）
+- **やったこと**: PRE-11〜PRE-14がDEC-11.11〜DEC-11.14として確定し`docs/draft.md`に反映された後、その反映が本当にコンパイル可能な形になっているかを裏取りするため、`docs/draft/`という一時ディレクトリに`docs/draft.md`中の全コードブロック（`go.mod`・`analyzer.go`・`cmd/goimportalias/main.go`・`internal/shape/model.go`・`internal/shape/config.go`・`internal/scan/scan.go`・`internal/decide/decide.go`・`internal/fix/fix.go`・`internal/genfile/genfile.go`）をそのまま書き出し、`go mod tidy`で依存（`golang.org/x/tools v0.48.0`とその推移依存）を解決した上で`go build ./...`・`go vet ./...`を実行した。
+
+## 気づいたこと
+
+1. **一度も実際にコンパイルを試していなかった`internal/fix/fix.go`（DEC-11.3・DEC-11.6・DEC-11.14反映後の`go/types`ベースの書き換えロジック・事前インデックス化）を含め、9ファイルすべてが`go build ./...`・`go vet ./...`ともにエラーなしで通った**。`decideOne`・`lookupPkgNameForPath`・`runCLI`の3関数は中身が`panic("not implemented in this sketch")`のスタブのままだが、Go言語的にはこれは有効な関数本体であり、コンパイルを妨げない。つまり今回確認できたのは「型・シグネチャ・パッケージ間の依存関係（import）が矛盾なく繋がっている」ことであり、実行時の振る舞い（実際に正しい診断が出る、正しく書き換わる等）はまだ何も検証していない。
+2. **エディタのgopls（バックグラウンドlint）が`internal/shape/config.go`の`Merge`関数について「2つの`for range`ループを`maps.Copy`に置き換えられる」と提案してきた**が、これは`go vet ./...`自体の指摘ではなくgoplsの追加的な静的解析（スタイル上の指摘）であり、区別して記録する必要があると気づいた。`go vet`単体を叩いた際の標準出力は空（エラーなし）だった。
+3. 検証後、一時ディレクトリ（`docs/draft/`、`go.mod`・`go.sum`含む）は成果物として残さず削除した。`docs/draft.md`という単一ファイルが実際の成果物である、という第2回で確立した方針を維持している。
+
+## 次にやること
+
+- 上記のビルド検証で見つかった通り、`lookupPkgNameForPath`の未実装、および`analyzer.go`の`AliasCollision`診断（`Pos`をどう選ぶか）の2点は、原則レベルの論点ではなく実装着手時にテストハーネスを整えながら詰める対象と判断し、新たな`PRE-`は起票しなかった（`docs/draft.md`の「現時点での残課題」節に明記済み）。
+- 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。
