@@ -14,8 +14,10 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
+	"strconv"
 
 	"github.com/podhmo/go-importalias/internal/shape"
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 // ApplyToFile rewrites file in place according to decisions, then formats it
@@ -27,6 +29,14 @@ import (
 // collide with a local variable, another import, a top-level declaration,
 // etc.).
 func ApplyToFile(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision) (src []byte, changed bool, err error) {
+	return ApplyToFileWithDuplicates(fset, file, typesInfo, decisions, nil)
+}
+
+// ApplyToFileWithDuplicates is ApplyToFile plus FR-6.16 handling: within one
+// file, duplicate imports of the same path under different aliases are merged
+// into the canonical alias decided by internal/decide, and surplus import
+// specs are removed.
+func ApplyToFileWithDuplicates(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision, duplicates []shape.DuplicateImport) (src []byte, changed bool, err error) {
 	for _, d := range decisions {
 		if d.Tie {
 			continue
@@ -57,6 +67,9 @@ func ApplyToFile(fset *token.FileSet, file *ast.File, typesInfo *types.Info, dec
 			changed = true
 		}
 	}
+	if applyDuplicateImports(fset, file, typesInfo, decisions, duplicates) {
+		changed = true
+	}
 
 	if !changed {
 		return nil, false, nil
@@ -67,6 +80,105 @@ func ApplyToFile(fset *token.FileSet, file *ast.File, typesInfo *types.Info, dec
 		return nil, false, err
 	}
 	return buf.Bytes(), true, nil
+}
+
+func applyDuplicateImports(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision, duplicates []shape.DuplicateImport) bool {
+	changed := false
+	for _, dup := range duplicates {
+		d, ok := findDecision(decisions, dup.Package, dup.Path)
+		if !ok || d.Tie {
+			continue
+		}
+		if mergeDuplicateImport(fset, file, typesInfo, dup, d.WantAlias) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func findDecision(decisions []shape.Decision, pkg, path string) (shape.Decision, bool) {
+	for _, d := range decisions {
+		if d.Package == pkg && d.Path == path {
+			return d, true
+		}
+	}
+	return shape.Decision{}, false
+}
+
+func mergeDuplicateImport(fset *token.FileSet, file *ast.File, typesInfo *types.Info, dup shape.DuplicateImport, wantAlias string) bool {
+	type importBinding struct {
+		spec    *ast.ImportSpec
+		pkgName *types.PkgName
+	}
+	bindings := make([]importBinding, 0, len(dup.Occurrences))
+	for _, occ := range dup.Occurrences {
+		spec := findImportSpecAt(file, occ.Pos)
+		if spec == nil {
+			continue
+		}
+		pkgName := shape.PkgNameOf(typesInfo, spec)
+		if pkgName == nil {
+			return false
+		}
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || path != dup.Path {
+			return false
+		}
+		bindings = append(bindings, importBinding{spec: spec, pkgName: pkgName})
+	}
+	if len(bindings) <= 1 {
+		return false
+	}
+
+	keep := -1
+	for i, b := range bindings {
+		if importAlias(b.spec) == wantAlias {
+			keep = i
+			break
+		}
+	}
+	if keep == -1 {
+		keep = 0
+	}
+
+	keepBinding := bindings[keep]
+	resolvedName := wantAlias
+	if resolvedName == "" {
+		resolvedName = keepBinding.pkgName.Imported().Name()
+	}
+
+	if importAlias(keepBinding.spec) != wantAlias && collides(typesInfo, file, keepBinding.spec, keepBinding.pkgName, resolvedName) {
+		return false
+	}
+	for i, b := range bindings {
+		if i == keep {
+			continue
+		}
+		if collidesWithCanonical(typesInfo, file, b.spec, b.pkgName, resolvedName, keepBinding.pkgName) {
+			return false
+		}
+	}
+
+	if importAlias(keepBinding.spec) != wantAlias {
+		renameImportSpec(typesInfo, file, keepBinding.pkgName, keepBinding.spec, wantAlias, resolvedName)
+	}
+	for i, b := range bindings {
+		if i == keep {
+			continue
+		}
+		for _, ident := range shape.SelectorIdentsOf(file, typesInfo, b.pkgName) {
+			ident.Name = resolvedName
+		}
+		astutil.DeleteNamedImport(fset, file, importAlias(b.spec), dup.Path)
+	}
+	return true
+}
+
+func importAlias(spec *ast.ImportSpec) string {
+	if spec.Name == nil {
+		return ""
+	}
+	return spec.Name.Name
 }
 
 func findImportSpecAt(file *ast.File, pos token.Pos) *ast.ImportSpec {
@@ -91,6 +203,18 @@ func collides(typesInfo *types.Info, file *ast.File, spec *ast.ImportSpec, pkgNa
 	}
 	for _, ident := range shape.SelectorIdentsOf(file, typesInfo, pkgName) {
 		if shape.NameVisibleAt(typesInfo, file, ident.Pos(), resolvedName, pkgName) {
+			return true
+		}
+	}
+	return false
+}
+
+func collidesWithCanonical(typesInfo *types.Info, file *ast.File, spec *ast.ImportSpec, pkgName *types.PkgName, resolvedName string, canonical *types.PkgName) bool {
+	if shape.NameVisibleAt(typesInfo, file, spec.Pos(), resolvedName, canonical) {
+		return true
+	}
+	for _, ident := range shape.SelectorIdentsOf(file, typesInfo, pkgName) {
+		if shape.NameVisibleAt(typesInfo, file, ident.Pos(), resolvedName, canonical) {
 			return true
 		}
 	}
