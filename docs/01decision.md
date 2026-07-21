@@ -1,9 +1,20 @@
 # importalias 実装方針決定書 (Implementation Decisions)
 
-- **バージョン**: v1.1
+- **バージョン**: v1.3
 - **日付**: 2026-07-21
 - **本書の位置づけ**: `docs/00origin.md`（機能仕様書、「何を提供するか」）を受けて、実装に着手するために必要な「どう実装するか」側の決定を、ユーザーとの確認を経て確定する。本書に記載の決定事項は、明示的な理由がない限りそのまま実装のベースラインとしてよい、自己完結した確定記録である。
 - **v1.0からの変更点**: ユーザーとの確認の結果、D1（go vet analyzer）とD2（スタンドアロンCLI）を**単一バイナリ`goimportalias`**として提供する方針に変更した（1.3/1.4節）。これに伴い、OQ-5（FR-6.11ケースのauto-fix）もv1で対応する方針に変更した（3.1節）。
+- **v1.1からの変更点**: `docs/draft.md`（リポジトリ全体のラフなドラフト実装）を書く中で見つかった、設計原則・パッケージレイヤ構成レベルの論点をユーザーと確認し、以下を確定した（詳細は11節）。
+  - `internal/config`パッケージを廃止し、`internal/shape`に統合した（1.3節・2節）。scan/decide/fixが共有するドメイン型（`Occurrence`/`Decision`等）と、設定ファイルの型・読み書きを同一パッケージにまとめる。
+  - D1（go vet analyzer）は`pass.Module`経由で`importalias.json`の読み込みを試みる（11.2節）。
+  - `internal/shape`を除く`internal`配下のロジックパッケージは、標準入出力・ファイルシステムに直接触れない（11.3節）。
+- **v1.3からの変更点**: `docs/draft.md`のドラフト作業で見つかった残りの設計・コーディング原則レベルの論点をユーザーと確認し、以下を確定した（詳細は11節）。
+  - エラー表現は、CLI終了コード分岐に必要な箇所だけセンチネルエラーとし、他は`fmt.Errorf`でラップする（11.5節）。
+  - `internal/fix`の書き換えは`astutil`＋`types.Info.Uses`＋`go/format.Node`とし、gofmt差分の混入を許容する（11.6節）。
+  - CLIモードのマルチパッケージ処理はv1では逐次実行とする（11.7節）。
+  - 設定ファイルの再生成は「保持する差分マージ」とする（11.8節）。
+  - コード中のコメント・識別子は英語とする（設計文書・CLIメッセージは日本語可）（11.9節）。
+  - テストは標準`testing`＋table-driven、`go-cmp`のみ例外許容、`testify`は不採用（11.10節）。
 - **現時点で未確定の論点**: 本書執筆時点で洗い出されていた実装上の論点はすべて本書内で確定済みである。テストスイートの構成・実行方法の細部（7節参照）のように、これ以上の言葉による決定ではなく実装しながらの実験によって詰めるべき事項については、10節（実装着手順）で最初のタスクとして明示する。
 
 ---
@@ -31,7 +42,7 @@ cmd/
   goimportalias/        # 唯一のバイナリ。go vet -vettool= としても、CLIとしても動作する（1.4節）
     main.go
 internal/
-  config/               # 5節: 設定ファイルの型・読み書き・マージ
+  shape/                # 5節・11.1節: 共有ドメイン型（Occurrence/Decision等）＋設定ファイルの型・読み書き・マージ
   decide/               # 4節: 決定ロジック（優先順位・多数決・tie）
   scan/                 # 6.5節: import走査・不整合検出ロジック（Analyzer実行とCLI実行の両方から共有）
   fix/                  # 7.3節・OQ-5: auto-fix（書き換え・識別子衝突チェック）
@@ -44,6 +55,7 @@ docs/
 ```
 
   - ルートパッケージは`internal`配下の`scan`/`decide`を呼び出す薄いAnalyzer定義のみを持ち、検出・決定ロジック自体は持たない（ロジックの実体は`internal/`に置くというOQ-1解消方針は維持）。
+  - `internal/shape`の命名・責務範囲については11.1節を参照。
 
 ### 1.4 単一バイナリ`goimportalias`の起動モード分岐
 
@@ -60,10 +72,10 @@ origin.md 5.3/5.4節は「キー・値の正確な形は実装時に確定して
 
 ### 2.1 Go型定義
 
-- **DEC-2.1**: `internal/config` に以下の型を定義する。
+- **DEC-2.1**: `internal/shape`（11.1節）に以下の型を定義する。
 
 ```go
-package config
+package shape
 
 type File struct {
 	Packages map[string]map[string]AliasValue `json:"packages"`
@@ -174,7 +186,7 @@ type AliasValue struct {
 
 - **DEC-7.1**: Analyzer（scan側）のテストは `analysistest.Run` を用い、`testdata/src/<pkg>/...` 配下に入力ファイルと `// want` コメントによる期待診断を配置する標準パターンに従う。加えて、`go vet -vettool=`経由の実際の呼び出し（DEC-1.4の起動モード分岐）を検証する統合テストも用意する。
 - **DEC-7.2**: auto-fix（`-fix`、fix側）のテストはgolden file方式とする。`testdata/fix/<case>/input/...` と `testdata/fix/<case>/golden/...` を用意し、実行結果をgoldenと比較する。各`<case>`について、対応するユースケース仕様を`docs/fix-cases.md`にケース名を一致させて記述し、「何のためのケースか」「どんな入力から何が期待されるか」を人間が読んでわかる状態にする（実装しながら都度追記する）。
-- **DEC-7.3**: `internal/config` の `AliasValue`（DEC-2.1）の `MarshalJSON`/`UnmarshalJSON` はtable-driven testで往復（round-trip）と異常系（不正な配列長など）を検証する。
+- **DEC-7.3**: `internal/shape` の `AliasValue`（DEC-2.1）の `MarshalJSON`/`UnmarshalJSON` はtable-driven testで往復（round-trip）と異常系（不正な配列長など）を検証する。
 - **DEC-7.4**: FR-12.2の通り、`testdata`ベースのテスト方式の確立を実装の最初のステップとする。
 
 ### 7.5 テストスイートの構成・実行方法の確定方針
@@ -199,7 +211,7 @@ type AliasValue struct {
 ## 10. 実装着手順（OQ-3の解消）
 
 - **DEC-10.1**: 以下の順序で着手する。最優先タスクは1〜3の「テストスイート（scan用・fix用）の構成・実行方法を仮実装で確立すること」であり（DEC-7.5）、これが完了すればそれ以降は「テストケースを追加してから実装する」というループの繰り返しで機能拡充を継続できる。
-  1. `internal/config`: DEC-2.1の型定義と(Un)MarshalJSON、DEC-7.3のround-tripテスト。fixのgolden側テストが設定ファイルを扱うために必要な最小限を用意する。
+  1. `internal/shape`: DEC-2.1の型定義（共有ドメイン型＋設定ファイル型）と(Un)MarshalJSON、DEC-7.3のround-tripテスト。fixのgolden側テストが設定ファイルを扱うために必要な最小限を用意する。
   2. **scan側テストハーネスの確立**: 何も診断しない空のAnalyzerと`testdata/src`配下の最小フィクスチャを用意し、`analysistest.Run`が実際に動く状態を作る（DEC-7.1・DEC-7.4）。
   3. **fix側テストハーネスの確立**: 何も書き換えないCLI（`cmd/goimportalias`の最小実装）と`testdata/fix/<case>`（input==golden の最小ケース）を用意し、golden比較が実際に動く状態を作る（DEC-7.2）。ここまでで2〜3の「テストスイートの構成・実行方法」が確定したものとする。
   4. `internal/scan`・`internal/decide`: 6.5節の検出ロジックと4節の決定ロジック（多数決・優先順位・tie判定）を、2で確立したテストハーネス上にテストケースを追加しながら実装する。
@@ -207,3 +219,62 @@ type AliasValue struct {
   6. `internal/genfile`: generated file判定。
   7. `internal/fix` + `cmd/goimportalias`のCLIモード: スキャン・設定ファイル生成・auto-fix（OQ-5ケースを含め、3で確立したテストハーネス上に`testdata/fix/<case>`と`docs/fix-cases.md`を都度追加しながら実装する）。
   - 理由: テストハーネスを先に動く状態にしておくことで、以降の各機能はハーネスの上に「ケース追加→実装」を繰り返すだけで安全に積み上がる。
+
+## 11. 設計原則・レイヤ構成の確定（`docs/draft.md`のドラフト作業からの追補）
+
+`docs/draft.md`（リポジトリ全体をラフに1ファイルへスケッチしたドラフト）を書く中で見つかった、個々のパッケージの実装詳細ではなく**設計原則・パッケージレイヤ構成レベル**の論点について、ユーザーとの確認を経て以下を確定する。
+
+### 11.1 共有ドメイン型・設定ファイル型の置き場所
+
+- **DEC-11.1**: `internal/config`パッケージは廃止し、`internal/shape`に統合する。`scan`が集める1件のimport出現・`decide`が下す1件の判定を表す共有ドメイン型（`Occurrence`・`Decision`等）と、設定ファイル（`importalias.json`）の型・読み書き（DEC-2.1の`File`/`AliasValue`、`Load`/`Save`）を、同一パッケージ`internal/shape`にまとめる。パッケージ内はファイルで役割を分けてよい（例: `shape/model.go`にドメイン型、`shape/config.go`に設定ファイル関連）。
+  - 理由: 設定ファイルの型・読み書きはコード量として小さく、かつ「複数のパッケージ（`scan`/`decide`/`fix`/`cmd`）から共有して参照される型」という性質はドメイン型と共通しているため、無理に`internal/model`と`internal/config`を分けず、依存パッケージが1つで済むようにする。ユーザー判断により、当初案の`internal/model`という名称も採用せず、`internal/shape`という名称を正式採用した。
+  - 1.3節のディレクトリレイアウトはこの決定に合わせて更新済み。
+
+### 11.2 D1（go vet analyzer）による設定ファイルの読み込み
+
+- **DEC-11.2**: D1（go vet analyzer）は、`pass.Module`（`golang.org/x/tools/go/analysis`の`Pass.Module`フィールド）経由でモジュールルートを推定し、`importalias.json`の読み込みを試みる。
+  - `pass.Module`が`nil`である、モジュールルートを特定できない、またはファイルが存在しない等で読み込みに失敗した場合は、その旨をstderrにログ出力した上で、「設定ファイルなし」として動作を継続する（4.2節の多数決のみで判定し、`ignore`は空として扱う）。
+  - 理由: `ignore`（5.7節）によるスキップ判定はCIとしての誤検出（本来チェック対象外のパッケージへの誤診断）を避けるために重要であり、D1が設定ファイルの内容を一切無視するのは実用上望ましくないと判断した。設定ファイルの読み込みはread-onlyな操作でありFR-6.15（D1はファイルシステムへの書き込みを一切行わない）には抵触しない。
+  - `pass.Module`の信頼性（ドライバによってはnilになりうる: `go doc`上の記述で確認済み）は環境依存のリスクとして残るが、読み込みに失敗した場合の扱い（stderrログ＋設定ファイルなし相当への自動フォールバック）を明確にすることで、環境差によってD1の診断結果が「クラッシュする」「原因不明に挙動が変わる」事態を避ける。
+  - `analysis.Analyzer`の`Requires`フィールド（`golang.org/x/tools/go/analysis`で実在確認済み。`inspect.Analyzer`が同じ機構で使われている）を用いて、設定ファイルの読み込みを行う内部的なサブAnalyzerに切り出してもよい（同一パス内での重複読み込みを避けられる）。ただしこれは実装上の整理術であり、上記の「読み込み失敗時の扱い」という原則自体を変えるものではない。
+
+### 11.3 `internal/fix`が識別子衝突チェック（FR-7.21）に使う型情報の受け渡し方
+
+- **DEC-11.3**: `internal/fix`の公開APIは、識別子衝突チェック（FR-7.21）・qualified identifierの安全な書き換え（FR-7.7）に必要な型情報（`*types.Info`・`*types.Package`）を、呼び出し元から明示的な引数として受け取る形にする。`golang.org/x/tools/go/packages`によるロードは、CLIモード（`cmd/goimportalias`）だけの責務とし、`internal/fix`自体は`go/packages`に依存しない。
+  - 理由: 型情報のロード（重い処理になりうる）をロジックパッケージの内部に隠さず、最上位のエントリポイントだけの責務にすることで、`internal/fix`を「受け取ったAST・型情報に対する純粋な変換」として単体テストしやすくする（11.4節の副作用境界の原則と一貫させる）。
+
+### 11.4 `internal`配下のロジックパッケージの副作用境界
+
+- **DEC-11.4**: `internal/shape`（設定ファイルの読み書きが責務そのものである部分）を除き、`internal/scan`・`internal/decide`・`internal/fix`・`internal/genfile`は標準入出力・ファイルシステムに直接触れない。これらのパッケージは受け取ったデータ（AST・型情報・`shape`の型等）に対する変換を行い、結果をデータとして返すだけの純粋な関数群として実装する。
+  - 人間向けの出力整形（FR-7.15: 「何を修正したか」「どこでtieが発生し保留されたか」等の表示）は`cmd/goimportalias`だけが行う。
+  - 理由: golden fileテスト・table-driven testを書きやすくするため。副作用を持つのは「その副作用自体が責務であるパッケージ」（`internal/shape`の設定ファイルI/O）だけに限定する。
+
+### 11.5 `internal/scan`・`internal/decide`・`internal/fix`のエラー表現
+
+- **DEC-11.5**: CLIの終了コード分岐（DEC-4.4）で「実行時エラー」かどうかを`errors.Is`で区別する必要がある箇所だけ、センチネルエラー（`var ErrXxx = errors.New(...)`）を各パッケージで定義する。それ以外は通常の`fmt.Errorf("...: %w", err)`でラップする。エラー文字列は英語・小文字始まりとし、`"importalias: "`のような固定プレフィックスは付けない（文脈は`cmd/goimportalias`側で一箇所にまとめて付加する）。
+  - 理由: プレフィックスを各所で手打ちすると表記揺れが起きやすく、呼び出し元でまとめて文脈を付加する方が保守しやすい。センチネルエラーもDEC-4.4の判定に本当に必要な箇所に限定し、過剰な定義を避ける。
+
+### 11.6 `internal/fix`のimport節・識別子書き換えの実装方針
+
+- **DEC-11.6**: import節の追加・削除は`golang.org/x/tools/go/ast/astutil`の`AddNamedImport`/`DeleteNamedImport`を使う。qualified identifier（`pkg.Symbol`）の書き換えは、`go/ast.Inspect`で`*ast.SelectorExpr`を走査し、`*types.Info.Uses`（DEC-11.3で受け取る型情報）を使って本当にそのimportを指しているか確認した上で行う（識別子の文字列一致だけに頼らない）。書き戻しは`go/format.Node`を使い、結果がgofmt整形された状態になることは許容する。
+  - 理由: 対象ファイルは自明な変換（FR-7.5）が入る時点でそもそも書き換えが発生するため、gofmt差分が混ざること自体は許容範囲とみなす。
+
+### 11.7 CLIモード（D2）でのマルチパッケージ処理
+
+- **DEC-11.7**: v1では逐次実行とする。
+  - 理由: (1) golden fileテスト（DEC-7.2）の出力順序を決定的にしたい、(2) 設定ファイルへの書き込みが1箇所に集約されるため、並行化すると書き込み競合の考慮が必要になり複雑さが増す、(3) 軽量ツールという性格（DEC-6.2）に合わせ、まずは単純さを優先する。パフォーマンスが実際に問題になった時点で`errgroup`等の導入を検討する。
+
+### 11.8 設定ファイルの再生成（FR-7.3）のマージ方針
+
+- **DEC-11.8**: 「保持する差分マージ」を採用する。今回のスキャンで見つかったpackage/pathの組は新しい判定結果で上書きし、スキャン範囲に含まれないpackage/pathの組の既存エントリはそのまま残す。
+  - 理由: 部分スコープでのスキャン（FR-7.13）を安全に行うためには、スキャン対象外の既存設定を意図せず消してしまわない方が事故が少ない。「毎回完全に再構築」する代替案は、部分スコープ運用と相性が悪い。
+
+### 11.9 コード中のコメント・識別子の言語
+
+- **DEC-11.9**: ソースコード中の識別子・コメントは英語とする。設計文書（`docs/*.md`）・CLIの人間向け出力メッセージ（FR-7.15）は日本語を許容する。
+  - 理由: DEC-8.4で`github.com/podhmo/go-importalias`として公開する前提と確定しており、公開Goライブラリとしての一般的な慣習（英語コメント・`godoc`規約）に合わせる方が、後から翻訳し直すコストを避けられる。
+
+### 11.10 テストコードの依存方針
+
+- **DEC-11.10**: テストコードもDEC-6.1〜6.3と同じ最小依存方針に含める。標準`testing`パッケージ＋`t.Run`によるtable-driven testを基本とし、比較には`reflect.DeepEqual`、または構造体の深い比較（AST・トークン位置を含む）が不便な場合に限り`github.com/google/go-cmp`をテスト専用の例外的な追加依存として許容する。`testify`は導入しない。
+  - 理由: 依存を最小限に保つという方針をテストにも一貫させる。ただし`go-cmp`はテスト専用であればモジュールの実行時依存グラフを汚さないため、深い構造体比較の実用性を優先して例外とする。
