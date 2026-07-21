@@ -18,7 +18,6 @@
 
 | # | issue | 概要 | 対象 DEC/FR |
 |---|---|---|---|
-| 04 | [analyzer-config-and-flags](./04-analyzer-config-and-flags.md) | analyzer の config 読込・ignore・strict flag | DEC-11.2 / FR-5.10〜5.12 / DEC-3.2 |
 
 ### D2（CLI）基盤
 
