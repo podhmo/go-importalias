@@ -103,6 +103,180 @@ func B() { f.Println("b") }
 	assertNoVetWrites(t, moduleDir, sourceHashes)
 }
 
+func TestCLIScanReportsInconsistentImports(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import "fmt"
+
+func B() { fmt.Println("b") }
+`,
+		"c.go": `package p
+
+import f "fmt"
+
+func C() { f.Println("c") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), `should use alias "f", not no alias`) {
+		t.Fatalf("stdout = %q, want importalias diagnostic", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertNoVetWrites(t, moduleDir, sourceHashes)
+}
+
+func TestCLIScanReportsTie(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import g "fmt"
+
+func B() { g.Println("b") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), `import "fmt" has unresolved tie among aliases ["f", "g"]`) {
+		t.Fatalf("stdout = %q, want tie diagnostic", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertNoVetWrites(t, moduleDir, sourceHashes)
+}
+
+func TestCLIScanSucceedsForConsistentImports(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import f "fmt"
+
+func B() { f.Println("b") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 0 {
+		t.Fatalf("goimportalias exit = %d, want 0; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want both empty", stdout.String(), stderr.String())
+	}
+	assertNoVetWrites(t, moduleDir, sourceHashes)
+}
+
+func TestCLIScanLoadFailureExitCode(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+`,
+	})
+
+	cmd := exec.Command(tool, "./does-not-exist")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 2 {
+		t.Fatalf("goimportalias exit = %d, want 2; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if stderr.Len() == 0 {
+		t.Fatalf("stderr is empty, want load failure")
+	}
+}
+
+func TestCLIScanFindsModuleRootFromSubdirectory(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"sub/a.go": `package sub
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"sub/b.go": `package sub
+
+import "fmt"
+
+func B() { fmt.Println("b") }
+`,
+		"sub/c.go": `package sub
+
+import f "fmt"
+
+func C() { f.Println("c") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, filepath.Join(moduleDir, "sub"))
+
+	cmd := exec.Command(tool, ".")
+	cmd.Dir = filepath.Join(moduleDir, "sub")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), `should use alias "f", not no alias`) {
+		t.Fatalf("stdout = %q, want importalias diagnostic", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(moduleDir, "importalias.json")); !os.IsNotExist(err) {
+		t.Fatalf("importalias.json stat error = %v, want not exist", err)
+	}
+	assertGoFileHashes(t, filepath.Join(moduleDir, "sub"), sourceHashes)
+}
+
 func buildVetTool(t *testing.T) string {
 	t.Helper()
 	tool := filepath.Join(t.TempDir(), "goimportalias")
@@ -121,6 +295,9 @@ func writeVetModule(t *testing.T, files map[string]string) string {
 		t.Fatalf("write go.mod: %v", err)
 	}
 	for name, content := range files {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", name, err)
+		}
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
@@ -150,9 +327,14 @@ func assertNoVetWrites(t *testing.T, moduleDir string, wantHashes map[string][32
 	if _, err := os.Stat(filepath.Join(moduleDir, "importalias.json")); !os.IsNotExist(err) {
 		t.Fatalf("importalias.json stat error = %v, want not exist", err)
 	}
+	assertGoFileHashes(t, moduleDir, wantHashes)
+}
+
+func assertGoFileHashes(t *testing.T, moduleDir string, wantHashes map[string][32]byte) {
+	t.Helper()
 	gotHashes := hashGoFiles(t, moduleDir)
 	if len(gotHashes) != len(wantHashes) {
-		t.Fatalf("go file count = %d, want %d", len(gotHashes), len(wantHashes))
+		t.Fatalf("go file count in %s = %d, want %d", moduleDir, len(gotHashes), len(wantHashes))
 	}
 	for name, want := range wantHashes {
 		got, ok := gotHashes[name]
@@ -167,4 +349,14 @@ func assertNoVetWrites(t *testing.T, moduleDir string, wantHashes map[string][32
 
 func fmtHash(sum [32]byte) string {
 	return fmt.Sprintf("%x", sum[:])
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode()
+	}
+	return -1
 }
