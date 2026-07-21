@@ -28,6 +28,7 @@
 
 | # | issue | 概要 | 対象 DEC/FR |
 |---|---|---|---|
+| 14 | [nested-type-definitions-fix](./14-nested-type-definitions-fix.md) | type alias とネストした interface/struct 型定義内の auto-fix 検証 | DEC-7.2, DEC-7.5, FR-6.10 |
 
 ### ドキュメント・インフラ
 

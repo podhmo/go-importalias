@@ -95,3 +95,93 @@ func TestPipeline_MultiFileMajority(t *testing.T) {
 		}
 	}
 }
+
+func TestPipeline_NestedTypeDefinitions(t *testing.T) {
+	const (
+		dir = "../../testdata/fix/nested_type_definitions"
+		pkg = "nestedtypedefinitions"
+	)
+	names := []string{"main.go", "anchor_one.go", "anchor_two.go"}
+
+	fset := token.NewFileSet()
+	files := make([]*ast.File, len(names))
+	for i, name := range names {
+		f, err := parser.ParseFile(fset, filepath.Join(dir, "input", name), nil, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("ParseFile(%s): %v", name, err)
+		}
+		files[i] = f
+	}
+
+	info := &types.Info{
+		Defs:      map[*ast.Ident]types.Object{},
+		Uses:      map[*ast.Ident]types.Object{},
+		Implicits: map[ast.Node]types.Object{},
+		Scopes:    map[ast.Node]*types.Scope{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	if _, err := conf.Check(pkg, fset, files, info); err != nil {
+		t.Fatalf("types.Config.Check input: %v", err)
+	}
+
+	occs := scan.FromFiles(fset, files, info, scan.Options{Package: pkg})
+	decisions, collisions, _ := decide.Decide(occs, nil, decide.Options{})
+	if len(collisions) != 0 {
+		t.Fatalf("Decide reported %d alias collisions, want 0: %+v", len(collisions), collisions)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("Decide returned %d decisions, want 1: %+v", len(decisions), decisions)
+	}
+	d := decisions[0]
+	if d.Tie {
+		t.Fatalf("Decide reported a tie, want a clear majority: %+v", d)
+	}
+	if d.WantAlias != "f" {
+		t.Fatalf("WantAlias = %q, want %q", d.WantAlias, "f")
+	}
+	if len(d.Inconsistent) != 1 || d.Inconsistent[0].Alias != "" {
+		t.Fatalf("Inconsistent = %+v, want exactly the unaliased main.go occurrence", d.Inconsistent)
+	}
+
+	for i, name := range names {
+		got, changed, err := fix.ApplyToFile(fset, files[i], info, decisions)
+		if err != nil {
+			t.Fatalf("ApplyToFile(%s): %v", name, err)
+		}
+
+		want, err := os.ReadFile(filepath.Join(dir, "golden", name))
+		if err != nil {
+			t.Fatalf("read golden %s: %v", name, err)
+		}
+
+		wantChanged := name == "main.go"
+		if changed != wantChanged {
+			t.Fatalf("ApplyToFile(%s) changed = %v, want %v", name, changed, wantChanged)
+		}
+		if changed && string(got) != string(want) {
+			t.Fatalf("ApplyToFile(%s) output mismatch:\ngot:\n%s\nwant:\n%s", name, got, want)
+		}
+		if !changed {
+			input, err := os.ReadFile(filepath.Join(dir, "input", name))
+			if err != nil {
+				t.Fatalf("read input %s: %v", name, err)
+			}
+			if string(input) != string(want) {
+				t.Fatalf("unchanged fixture %s has input/golden mismatch", name)
+			}
+		}
+	}
+
+	goldenFset := token.NewFileSet()
+	goldenFiles := make([]*ast.File, len(names))
+	for i, name := range names {
+		f, err := parser.ParseFile(goldenFset, filepath.Join(dir, "golden", name), nil, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("ParseFile golden %s: %v", name, err)
+		}
+		goldenFiles[i] = f
+	}
+	if _, err := conf.Check(pkg, goldenFset, goldenFiles, nil); err != nil {
+		t.Fatalf("types.Config.Check golden: %v", err)
+	}
+}

@@ -16,6 +16,13 @@
 - **期待される出力**: `boo.go` の import と参照だけが `f` に書き換わり、すでに canonical alias を使う `foo.go` と `bar.go` は変わらない。
 - **根拠 FR・DEC**: FR-6.10、DEC-3.1、DEC-7.2。
 
+## nested_type_definitions
+
+- **目的**: type alias の右辺にネストした interface/struct 型リテラルがある場合でも、型位置の qualified identifier を canonical alias へ rename できることを確認する。
+- **入力の要点**: `main.go` は無 alias の `fmt` を使い、type alias 内のネストした interface/struct 型で `fmt.Stringer` と `fmt.State` を参照している。別ファイル 2 件が `f "fmt"` を使うため `f` が canonical になる。
+- **期待される出力**: `main.go` の import が `f "fmt"` になり、ネストした型定義内の参照がすべて `f.Stringer` / `f.State` に書き換わる。すでに canonical alias を使う別ファイルは変わらない。
+- **根拠 FR・DEC**: FR-6.10、DEC-7.2、DEC-7.5。
+
 ## collision_unaliased_to_alias
 
 - **目的**: 無 alias import を alias 付き import へ rename するとローカル識別子と衝突する場合に、危険な auto-fix をスキップできることを確認する。
