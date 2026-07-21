@@ -145,6 +145,32 @@ func (f *File) Lookup(pkg, path string) (AliasValue, bool) {
 	return AliasValue{}, false
 }
 
+// IgnoresPackage reports whether pkg matches any ignore pattern. Patterns use
+// the same package-scope syntax as Lookup: exact package, "foo/..." prefix, or
+// "*" global.
+func (f *File) IgnoresPackage(pkg string) bool {
+	if f == nil {
+		return false
+	}
+	for _, pattern := range f.Ignore {
+		if matchesPackageScope(pattern, pkg) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesPackageScope(pattern, pkg string) bool {
+	if pattern == "*" || pattern == pkg {
+		return true
+	}
+	prefix, ok := strings.CutSuffix(pattern, "/...")
+	if !ok {
+		return false
+	}
+	return pkg == prefix || strings.HasPrefix(pkg, prefix+"/")
+}
+
 // Merge combines an existing config with freshly scanned results: package
 // keys present in fresh replace the existing entry wholesale (including any
 // path-level sub-entries not re-observed in this scan); package keys absent

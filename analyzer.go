@@ -4,11 +4,14 @@ package importalias
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"golang.org/x/tools/go/analysis"
 
 	"github.com/podhmo/go-importalias/internal/decide"
 	"github.com/podhmo/go-importalias/internal/scan"
+	"github.com/podhmo/go-importalias/internal/shape"
 )
 
 // Analyzer reports, for each package, import paths that are aliased
@@ -23,13 +26,21 @@ var Analyzer = &analysis.Analyzer{
 // skipGenerated backs the -importalias.skip_generated flag (DEC-2.4). Per
 // FR-5.7 generated files are skipped by default, so it defaults to true.
 var skipGenerated = true
+var strictFlag = false
 
 func init() {
 	Analyzer.Flags.BoolVar(&skipGenerated, "skip_generated", true,
 		"skip files carrying a generated-code marker (// Code generated ... DO NOT EDIT.)")
+	Analyzer.Flags.BoolVar(&strictFlag, "strict", false,
+		"treat any multiple aliases for the same import path as an unresolved tie")
 }
 
 func run(pass *analysis.Pass) (any, error) {
+	cfg := loadConfig(pass)
+	if cfg != nil && cfg.IgnoresPackage(pass.Pkg.Path()) {
+		return nil, nil
+	}
+
 	// pass.TypesInfo is already populated by the analysis driver, so no
 	// separate go/packages load is needed here (that's the CLI's job, per
 	// DEC-11.3, since a standalone run has no driver to do it for it).
@@ -37,7 +48,7 @@ func run(pass *analysis.Pass) (any, error) {
 		Package:       pass.Pkg.Path(),
 		SkipGenerated: skipGenerated,
 	})
-	decisions, collisions, duplicates := decide.Decide(occs, nil, decide.Options{})
+	decisions, collisions, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: strictFlag})
 
 	for _, d := range decisions {
 		if d.Tie {
@@ -70,6 +81,19 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 	}
 	return nil, nil
+}
+
+func loadConfig(pass *analysis.Pass) *shape.File {
+	if pass.Module == nil {
+		fmt.Fprintln(os.Stderr, "importalias: no module information; continuing without config")
+		return nil
+	}
+	cfg, err := shape.Load(filepath.Join(pass.Module.Dir, "importalias.json"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "importalias: %v; continuing without config\n", err)
+		return nil
+	}
+	return cfg
 }
 
 func aliasDisplay(alias string) string {
