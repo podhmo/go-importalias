@@ -57,3 +57,17 @@
 - **入力の要点**: `main.go` で `fmt` が `f` と `oldfmt` の 2 alias で import され、`oldfmt` の利用箇所ではローカル変数 `f` が見えている。別ファイル `other.go` も `f "fmt"` を使うため `f` が canonical になる。
 - **期待される出力**: `oldfmt.Println` から `f.Println` への変更は行わず、入力と同じ内容のままにする。
 - **根拠 FR・DEC**: FR-6.16、FR-7.16、DEC-11.20、FR-7.5。
+
+## alias_collision_unalias
+
+- **目的**: 同一 alias が複数 import path に対応する場合に、決定ロジックが返す path 順の先頭をその alias のまま残し、残りの path を無 alias import へ振り替えて衝突を解消できることを確認する。
+- **入力の要点**: `bar.go` は `x "flag"`、`foo.go` は `x "fmt"` を使っており、package-wide では alias `x` が複数 path に対応している。
+- **期待される出力**: path 順で先頭の `flag` は `x "flag"` のまま残し、`fmt` 側は無 alias import に変更して `x.Println` を `fmt.Println` に書き換える。
+- **根拠 FR・DEC**: FR-6.11、FR-7.8、DEC-3.1、DEC-11.6、FR-7.5。
+
+## alias_collision_skip
+
+- **目的**: FR-6.11 の衝突解消で無 alias 化後の識別子がローカル識別子と衝突する場合に、危険な auto-fix をスキップできることを確認する。
+- **入力の要点**: `bar.go` は `x "flag"`、`foo.go` は `x "fmt"` を使う。`foo.go` の `x.Println` と同じスコープにローカル変数 `fmt` が存在する。
+- **期待される出力**: `x.Println` を `fmt.Println` に変更するとローカル変数 `fmt` と衝突するため、入力と同じ内容のままにする。
+- **根拠 FR・DEC**: FR-6.11、FR-7.8、DEC-3.1、DEC-11.6、FR-7.5。
