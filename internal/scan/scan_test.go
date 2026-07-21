@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"testing"
 
 	"github.com/podhmo/go-importalias/internal/scan"
@@ -57,6 +58,57 @@ func F() {
 	}
 	if got := len(occs[0].UsePos); got != 1 {
 		t.Fatalf("occs[0].UsePos has %d entries, want 1 (fmt.Println is used once)", got)
+	}
+}
+
+func TestFromFiles_NestedTypeDefinitionUsePos(t *testing.T) {
+	const filePath = "../../testdata/fix/nested_type_definitions/input/main.go"
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	info := &types.Info{
+		Defs:      map[*ast.Ident]types.Object{},
+		Uses:      map[*ast.Ident]types.Object{},
+		Implicits: map[ast.Node]types.Object{},
+		Scopes:    map[ast.Node]*types.Scope{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	if _, err := conf.Check("nestedtypedefinitions", fset, []*ast.File{file}, info); err != nil {
+		t.Fatalf("types.Config.Check: %v", err)
+	}
+
+	occs := scan.FromFiles(fset, []*ast.File{file}, info, scan.Options{Package: "nestedtypedefinitions"})
+
+	if len(occs) != 1 {
+		t.Fatalf("FromFiles returned %d occurrences, want 1: %+v", len(occs), occs)
+	}
+	if got, want := occs[0].Path, "fmt"; got != want {
+		t.Fatalf("occs[0].Path = %q, want %q", got, want)
+	}
+	if got, want := occs[0].Alias, ""; got != want {
+		t.Fatalf("occs[0].Alias = %q, want %q", got, want)
+	}
+	if got, want := len(occs[0].UsePos), 7; got != want {
+		t.Fatalf("occs[0].UsePos has %d entries, want %d (nested type references)", got, want)
+	}
+
+	gotLines := make([]int, 0, len(occs[0].UsePos))
+	for _, pos := range occs[0].UsePos {
+		position := fset.Position(pos)
+		if filepath.Base(position.Filename) != "main.go" {
+			t.Fatalf("UsePos filename = %q, want main.go", position.Filename)
+		}
+		gotLines = append(gotLines, position.Line)
+	}
+	wantLines := []int{6, 8, 10, 11, 17, 19, 20}
+	for i, want := range wantLines {
+		if gotLines[i] != want {
+			t.Fatalf("UsePos lines = %v, want %v", gotLines, wantLines)
+		}
 	}
 }
 
