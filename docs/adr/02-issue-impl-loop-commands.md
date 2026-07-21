@@ -32,7 +32,6 @@ ADR-01 で issue のライフサイクル（起票 → open/closed）は決め�
 
 1. issue 選定（`docs/issues/README.md` から open を 1 件）
 2. 現状把握（`git status` / 関連コード確認）
-3. ブランチ作成（`git switch -c ...`）
-4. 実装
-5. 検証ループ（緑になるまで）: `go build ./...` / `go vet ./...` / `go test ./...`
-6. コミット前のみ: `gofmt -l -w .`（コミットは求められたときだけ）
+3. 実装
+4. 検証ループ（緑になるまで）: `go build ./...` / `go vet ./...` / `go test ./...`
+5. コミット前のみ: `gofmt -l -w .`（コミットは求められたときだけ）

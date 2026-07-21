@@ -1,6 +1,6 @@
 # 実装 issue 索引
 
-`docs/01decision.md`（実装決定 v1.6）の DEC-10.1 実装着手順の残作業を、独立に着手・テストできる単位に分割した issue 群。運用ルールは [ADR-01](../adr/01-issue-workflow.md) を参照。
+`docs/01decision.md`（実装決定 v1.6）の DEC-10.1 実装着手順の残作業を、独立に着手・テストできる単位に分割した issue 群。運用ルール（ライフサイクル）は [ADR-01](../adr/01-issue-workflow.md)、1 issue を回す実装ループ（検証コマンド）は [ADR-02](../adr/02-issue-impl-loop-commands.md) を参照。
 
 ## ライフサイクル
 
@@ -18,7 +18,6 @@
 
 | # | issue | 概要 | 対象 DEC/FR |
 |---|---|---|---|
-| 01 | [genfile-skip-generated](./01-genfile-skip-generated.md) | `internal/genfile` 新設と generated file skip 連携 | DEC-2.3 / FR-5.7 / DEC-2.4 |
 | 02 | [fr6.11-detection](./02-fr6.11-detection.md) | FR-6.11（同一 alias → 複数 path）検出の結線 | FR-6.11 / DEC-11.12 / DEC-11.16 |
 | 03 | [fr6.16-detection](./03-fr6.16-detection.md) | FR-6.16（単一ファイル内の重複 import）検出 | FR-6.16 |
 | 04 | [analyzer-config-and-flags](./04-analyzer-config-and-flags.md) | analyzer の config 読込・ignore・strict flag | DEC-11.2 / FR-5.10〜5.12 / DEC-3.2 |
