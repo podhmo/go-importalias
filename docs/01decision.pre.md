@@ -23,23 +23,46 @@
 
 ## PRE-23: DEC-11.22 識別子衝突判定の精密化で扱う範囲
 
-**背景**: issue 13 は `shape.NameVisibleAt` の保守的近似を精密化する候補として、(1) 同一ブロック内の宣言前後を区別すること、(2) universe scope（`len` など）との衝突を扱うこと、の 2 点を挙げている。本ラウンドでは実装ではなく、対応する rewrite / 対応しない rewrite の境界を red test として固定する。
+**背景**: issue 13 は `shape.NameVisibleAt` の保守的近似を精密化する候補として、変数名・シンボル名の変更が import qualifier rename と衝突するケースを洗い出すもの。現時点では赤テストを増やすのではなく、Go として valid / invalid か、auto-fix で対応すべきか、対応するには何が必要かを整理する。
+
+**実験で確認した Go のスコープ事実**:
+
+- import name は file block に入る。別 import と同じ import name になる rewrite は invalid。
+- package-level の `var` / `const` / `type` / `func` と、いずれかのファイルの import name が同名になる package は invalid。これは同一ファイルだけでなく別ファイルでも invalid。
+- 関数内ローカル宣言は宣言位置以降だけ有効。したがって同一ブロックでも「import 使用 → 後続で同名ローカル変数宣言」は valid だが、「同名ローカル変数宣言 → import 使用」は invalid / 意味破壊になる。
+- inner block・closure・`init` は特別扱い不要で、通常の lexical scope と宣言位置で判定できる。closure の parameter / named result / type parameter / receiver は closure body 内で import name を隠す。
+- 外側ブロックの同名ローカル変数が closure literal より前で宣言されていれば、closure 内の import 使用も shadow される。closure literal より後の宣言なら、その closure 内からは見えない。
+- `for` / `if` / `switch` の init statement で宣言された名前は、それぞれの body / case 内で import name を隠す。`range` 変数も loop body 内で隠す。
+- label、struct field、method name、selector の field/method は通常識別子とは別名前空間なので、import qualifier rename とは衝突しない。ただし method receiver 変数名は通常の parameter と同じく衝突し得る。
+- predeclared identifier（`len` など）を import alias にすること自体は、ファイル内に既存の builtin 使用がなければ valid。既存の `len(...)` などがあると、alias 後は package name として解決されるため invalid / 意味破壊になる。
+
+**ケース分類**:
+
+| ケース | Go としての結果 | auto-fix 方針 | 対応に必要な判定 |
+|---|---:|---|---|
+| rename 後の名前が同一ファイルの別 import name と一致 | invalid | skip | file scope の他 `*types.PkgName` を検出 |
+| rename 後の名前が package-level decl と一致（同一/別ファイル） | invalid | skip | package scope の object を検出 |
+| 使用箇所より前に同一/外側 block の同名 local がある | invalid / 意味破壊 | skip | 使用位置で実際に見える object を検出 |
+| 同一 block に同名 local があるが、その宣言は全使用箇所より後 | valid | rewrite 可 | object の宣言位置と使用位置を比較 |
+| inner block 内だけに同名 local があり、import 使用は外側だけ | valid | rewrite 可 | innermost scope からの可視性判定 |
+| inner block / closure 内の import 使用が parameter・local・type parameter・receiver に隠される | invalid / 意味破壊 | skip | function literal を含む通常 scope 判定 |
+| `init` 内で同名 local と衝突 | 通常関数と同じ | 通常関数と同じ | 特別扱いせず scope 判定 |
+| `for` / `if` / `switch` init 変数、range 変数と body 内使用が衝突 | invalid / 意味破壊 | skip | statement-created scope の可視性判定 |
+| label / field / method name と同名 | valid | 無視 | `types.Object` の通常スコープに出ないものは衝突扱いしない |
+| rename 後の名前が predeclared identifier で、既存 builtin 使用あり | invalid / 意味破壊 | skip | `types.Universe.Lookup(name)` に解決される `info.Uses` を file 全体で検出 |
+| rename 後の名前が predeclared identifier だが、既存 builtin 使用なし | valid | rewrite 可（ただし保守的に skip も選択肢） | builtin 使用がないことを確認 |
 
 **対応可能として扱う候補**:
 
-- **宣言より前の使用箇所だけを書き換えるケース**: 同一ブロック内に rename 後の識別子と同名のローカル変数があっても、そのローカル変数の `types.Object.Pos()` より前にある import qualifier 使用は、Go のスコープ上まだそのローカル変数が見えていないため安全に書き換え可能とみなす。
-- **既存の安全側 skip は維持するケース**: rename 後の識別子が使用箇所で既に見えている場合（宣言後の同一ブロック、外側スコープ、package scope、別 import など）は、これまで通り auto-fix をスキップする。
-- **universe scope との衝突を検出して skip するケース**: rename 後の識別子が `len`・`cap` などの predeclared identifier と一致する場合は、ファイル全体で組み込み識別子を shadow し得るため、現時点では使用有無を問わず auto-fix をスキップする。
+- **精密な可視性判定**: `types.Scope.LookupParent(name, pos)` 相当の、位置を考慮した lookup を使い、同一 block 内の「宣言後だけ衝突」を区別する。これにより、closure・block・`init`・`for/if/switch/range` も同じ仕組みで扱える。
+- **package/file block の invalid 化検出**: import spec 自体を rename した時点で package-level decl や別 import と衝突するケースは、使用箇所に関係なく skip する。
+- **universe scope の条件付き判定**: rename 後の名前が predeclared identifier の場合、file 内に既存 builtin 使用があるなら skip、なければ valid とみなす。ただし実装を単純化したい場合は v1.1 では predeclared identifier への rename を一律 skip としても安全。
 
 **対応が難しい、または今回扱わない候補**:
 
 - **部分 rewrite**: 1 つの import に対する使用箇所の一部だけが安全で、一部が衝突する場合に、安全な箇所だけを書き換えて import を分割・追加するような変換は行わない。1 import spec の rename は全使用箇所が安全な場合だけ適用する。
 - **ローカル識別子側の rename**: import qualifier を通すために既存のローカル変数、関数、型、別 import などを改名する変換は行わない。
-- **universe shadowing の使用箇所精査**: `len` などへの rename が実際に既存の組み込み関数呼び出しを壊すかどうかをファイル全体で精査して条件付き許可することは、今回は扱わない。安全側に一律 skip する。
+- **invalid 入力の救済**: 既に type-check できない入力を、rename で直す/悪化させないように扱うことは対象外。DEC-11.22 は valid input を invalid output にしないための判定に限定する。
+- **semantic import alias の是非判断**: `len "fmt"` のような読みづらいが valid な alias を style として禁止するかは、衝突判定ではなく別の policy/config 論点にする。
 
-**追加した red test**:
-
-- `TestApplyToFile_Collision/unaliased_to_alias_declared_after_use_is_safe`: `testdata/fix/collision_decl_after_use`。期待値は rewrite ありだが、現状の `NameVisibleAt` は同一ブロック内の宣言前後を区別しないため `changed=false` になり red。
-- `TestApplyToFile_Collision/unaliased_to_universe_name_is_collision`: `testdata/fix/collision_universe_len`。期待値は rewrite なしだが、現状の `NameVisibleAt` は universe scope を見ないため `changed=true` になり red。
-
-**推奨（デフォルト）**: 上記の「対応可能として扱う候補」を DEC-11.22 の実装範囲とし、「対応が難しい、または今回扱わない候補」は明示的に非対応とする。今回追加したテストは意図的に red のままにし、次イテレーションで `NameVisibleAt` を精密化する際の受け入れ条件として使う。
+**推奨（デフォルト）**: DEC-11.22 の実装では「valid input を invalid output にしない」ことを基準に、位置を考慮した scope lookup・package/file block collision・既存 builtin 使用検出を実装する。部分 rewrite とローカル識別子側 rename は非対応とし、1 import spec の全使用箇所が安全な場合だけ rewrite する。
