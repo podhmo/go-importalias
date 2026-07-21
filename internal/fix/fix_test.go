@@ -30,6 +30,7 @@ func TestApplyToFile_RenameToMajority(t *testing.T) {
 		Defs:      map[*ast.Ident]types.Object{},
 		Uses:      map[*ast.Ident]types.Object{},
 		Implicits: map[ast.Node]types.Object{},
+		Scopes:    map[ast.Node]*types.Scope{},
 	}
 	conf := types.Config{Importer: importer.Default()}
 	if _, err := conf.Check("main", fset, []*ast.File{file}, info); err != nil {

@@ -5,6 +5,7 @@ package scan
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 	"strconv"
 	"strings"
 
@@ -21,7 +22,13 @@ type Options struct {
 // file.Imports, without go/ast/inspector.Inspector: a single package's
 // import declarations are plain top-level data on *ast.File, so no
 // traversal machinery is needed (see docs/02notice.md round 6).
-func FromFiles(fset *token.FileSet, files []*ast.File, opts Options) []shape.Occurrence {
+//
+// typesInfo is optional (may be nil, in which case Occurrence.UsePos is left
+// empty). When provided, it must describe files (Defs/Uses/Implicits
+// populated by type-checking exactly these files as one package) — it is
+// used to resolve, for each import, every qualified-identifier reference to
+// it (the fix target locations, not just the import declaration itself).
+func FromFiles(fset *token.FileSet, files []*ast.File, typesInfo *types.Info, opts Options) []shape.Occurrence {
 	var occs []shape.Occurrence
 	for _, file := range files {
 		isTest := strings.HasSuffix(fset.Position(file.Pos()).Filename, "_test.go")
@@ -34,12 +41,21 @@ func FromFiles(fset *token.FileSet, files []*ast.File, opts Options) []shape.Occ
 			if imp.Name != nil {
 				alias = imp.Name.Name
 			}
+
+			var usePos []token.Pos
+			if pkgName := shape.PkgNameOf(typesInfo, imp); pkgName != nil {
+				for _, ident := range shape.SelectorIdentsOf(file, typesInfo, pkgName) {
+					usePos = append(usePos, ident.Pos())
+				}
+			}
+
 			occs = append(occs, shape.Occurrence{
 				Package: opts.Package,
 				Path:    path,
 				Alias:   alias,
 				Pos:     imp.Pos(),
 				IsTest:  isTest,
+				UsePos:  usePos,
 			})
 		}
 	}

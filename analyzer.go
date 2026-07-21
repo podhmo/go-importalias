@@ -21,7 +21,10 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	occs := scan.FromFiles(pass.Fset, pass.Files, scan.Options{Package: pass.Pkg.Path()})
+	// pass.TypesInfo is already populated by the analysis driver, so no
+	// separate go/packages load is needed here (that's the CLI's job, per
+	// DEC-11.3, since a standalone run has no driver to do it for it).
+	occs := scan.FromFiles(pass.Fset, pass.Files, pass.TypesInfo, scan.Options{Package: pass.Pkg.Path()})
 	decisions := decide.Decide(occs, nil, decide.Options{})
 
 	for _, d := range decisions {
@@ -29,8 +32,18 @@ func run(pass *analysis.Pass) (any, error) {
 			continue
 		}
 		for _, o := range d.Inconsistent {
-			pass.Reportf(o.Pos, "import %q should use alias %s, not %s (package-wide majority)",
+			msg := fmt.Sprintf("import %q should use alias %s, not %s (package-wide majority, fix target)",
 				d.Path, aliasDisplay(d.WantAlias), aliasDisplay(o.Alias))
+			// Report at every usage site (the actual fix targets), falling
+			// back to the import declaration itself if none were resolved
+			// (e.g. no type info available).
+			if len(o.UsePos) == 0 {
+				pass.Reportf(o.Pos, "%s", msg)
+				continue
+			}
+			for _, pos := range o.UsePos {
+				pass.Reportf(pos, "%s", msg)
+			}
 		}
 	}
 	return nil, nil

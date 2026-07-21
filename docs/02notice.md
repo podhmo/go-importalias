@@ -145,3 +145,65 @@
 - `docs/01decision.pre.md`のPRE-18〜PRE-20についてユーザー確認を得て、`docs/01decision.md`にDEC-として追記する。
 - FR-6.11（同一alias→複数path）・FR-6.16（同一ファイル内重複import）・generated file skip・CLI本体（`cmd/goimportalias`）は今回スコープ外のまま。次のイテレーションで対象を広げる際は、今回確立したscan/fixそれぞれのテストハーネス（`testdata/src/<pkg>`+`analysistest`、`testdata/fix/<case>`+golden比較）にケースを追加していく形で進められる見込み。
 - 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。
+
+---
+
+# 第7回：多数決をマルチファイルで検証 + 診断位置を「使用箇所」にする実験
+
+- **日付**: 2026-07-21（同日）
+- **本書の位置づけ**: 第6回への2点のフィードバックを受けた追加実験。(1) 多数決の正しさを確認するにはfix側もscan/decideを経由した本物のマルチファイル入力でテストすべき（第6回のfixテストは`shape.Decision`を手で組み立てた1ファイルのみのケースだった）。(2) go vetの診断表示位置を、import宣言行だけでなく「実際にその別名が使われている箇所（＝fixが書き換える箇所）」にすべき（例: foo.go/bar.goで`x`、boo.goで`oldx`と別名を付けている場合、`oldx`の使用箇所自体を診断位置として出したい）。
+
+## やったこと
+
+1. `shape.Occurrence`に`UsePos []token.Pos`を追加。ある importが実際に使われている箇所（`pkg.Symbol`形式の参照）の位置一覧を保持できるようにした。
+2. `internal/shape`に`PkgNameOf`（`*ast.ImportSpec`から`*types.PkgName`を解決）・`SelectorIdentsOf`（`*types.PkgName`を参照している`*ast.SelectorExpr.X`識別子を列挙）という2つの小さなヘルパーを新設した。これは元々`internal/fix`だけに書いていたロジックだが、今回`internal/scan`も同じ解決が必要になったため、重複を避けて`internal/shape`に寄せた。
+3. `internal/scan.FromFiles`に`typesInfo *types.Info`引数を追加（nil許容）。型情報が渡された場合のみ、各`Occurrence`の`UsePos`を埋める。
+4. ルート`analyzer.go`を、`pass.TypesInfo`（Analyzerの実行時にdriverがすでに計算済みで無料で使える）を`scan.FromFiles`にそのまま渡すように変更し、診断を「`Inconsistent`な occurrence の`UsePos`一つひとつ」に対して`pass.Reportf`するように変更した（`UsePos`が空の場合のみimport宣言行にフォールバック）。
+5. `internal/fix/fix.go`の`renameImportSpec`を、重複していたPkgName解決・SelectorExpr走査ロジックを`shape.PkgNameOf`/`shape.SelectorIdentsOf`呼び出しに置き換えてリファクタリングした（振る舞いは変えていない）。
+6. `testdata/src/dup/b.go`の`// want`コメントを、import宣言行から実際の使用箇所（`fmt.Println(...)`の各行）に移し、かつ使用箇所を2つに増やして「1ファイル内の複数の使用箇所それぞれに診断が出る」ことを検証した。
+7. ユーザーの例（foo.go/bar.goで`f`、boo.goで`oldf`）を模した`testdata/fix/multi_file_majority/{input,golden}/{foo,bar,boo}.go`を新設し、`internal/fix/pipeline_test.go`で`scan.FromFiles`→`decide.Decide`→`fix.ApplyToFile`を3ファイル分まとめて型チェックした上で実行し、(a) 多数決が正しく`f`（2票）に決まること、(b) 負けた`boo.go`の`Inconsistent`occurrenceの`UsePos`が2件（`oldf.Println`の2箇所）であること、(c) `foo.go`/`bar.go`は`changed=false`で無変更、`boo.go`だけが`changed=true`でgoldenと一致することを確認した。
+
+## 気づいたこと
+
+1. **`go vet`のAnalyzer（D1）は`pass.TypesInfo`をdriverからタダで受け取れる**ため、型情報を使った使用箇所解決（`PkgNameOf`/`SelectorIdentsOf`）にAnalyzer側で`go/packages`を呼ぶ必要は一切なかった。一方CLI（D2）側では、DEC-4.3がすでに「`internal/fix`向けに`go/packages`で型情報をロードする」ことを決めていたが、今回`internal/scan`も型情報を使う設計に変わったため、「`internal/scan`にも同じ型情報を渡す」という一手間がCLI側の実装に増えることが分かった（→PRE-21）。
+2. **`internal/fix`にだけ書いていた「PkgNameを解決してSelectorExprを走査する」ロジックが、`internal/scan`にも実質同じ形で必要になり、コードの重複が生まれかけた**。今回は`internal/shape`（すでにscan/decide/fix共通のドメイン型置き場と位置づけられていた、DEC-11.1）に`PkgNameOf`/`SelectorIdentsOf`という薄いヘルパーとして寄せることで解消した。DEC-11.1の「shapeは共有ドメイン型の置き場」という原則が、データ型だけでなく「その型が持つ意味を扱う小さな共通処理」にも自然に拡張できることが実地で確認できた。
+3. **診断位置を使用箇所単位にしたことで、`analysistest`の`// want`コメントも使用箇所単位（1ファイル内で複数行）に分割する必要があった**。第6回で確認した「`// want`は診断と同じ行に置く」というルールの延長で、1つのoccurrenceが複数の使用箇所を持つ場合は、その数だけ`// want`を用意する必要がある、という運用が確認できた。
+4. **マルチファイルの型チェックは、`types.Config.Check(pkg, fset, []*ast.File{...全ファイル...}, info)`に対象パッケージの全ファイルをまとめて渡すだけで、`go/packages`なしで成立した**（第6回の単体ファイルチェックの延長）。今回は標準ライブラリ（`fmt`）のみに依存するため成立しており、外部モジュールへの依存や複数パッケージにまたがるケースでは引き続き`go/packages`が必要になる境界は変わっていない。
+5. `fix.ApplyToFile`は`Occurrence.UsePos`を直接使わず、`shape.PkgNameOf`+`shape.SelectorIdentsOf`をその場で呼び直して書き換え対象を求めている。診断表示用（scan/analyzer側）と書き換え用（fix側）で「使用箇所を求める」という同じ計算を2回行っている形になっており、`UsePos`をfix側に渡して再利用する設計に寄せるべきかは未検討のまま残っている。
+
+## 次にやること
+
+- 上記1点（PRE-21）を`docs/01decision.pre.md`に追記した。
+- 気づき5（診断用と書き換え用で使用箇所解決を2回行っている点）は、原則レベルというよりは効率上の最適化余地に近いと判断し、今回はPRE化を見送った。将来的にファイルサイズが大きくなった場合の性能上の懸念として、DEC-11.14（`internal/fix`の事前インデックス化方針）と合わせて扱うのがよさそうという所感のみ残す。
+- 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。
+
+---
+
+# 第8回：qualified importの別名とローカル変数名の衝突を実装・検証する実験
+
+- **日付**: 2026-07-21（同日）
+- **本書の位置づけ**: ユーザーから追加で「importの別名と関数内変数名が衝突するケースをきちんと考えて欲しい」という指摘を受けた実験。指摘は2点に整理できる：(1) 既存コードで変数名がimportの別名と衝突（同名でシャドーイング）していても、それ自体は普通に動くGoコードであり、我々のツールのfix対象にはならない（＝既存の`shape.SelectorIdentsOf`の`types.Info.Uses`ベースの解決が、シャドーされた位置を正しく除外できているはず）。(2) しかし fix によって**新しく導入される別名**が、たまたま既存の変数名と衝突するケースは要注意で、`fmt`（無alias）→`f`の方向と、`f`→`fmt`（無alias化）の方向の両方を確認する必要がある。
+
+## やったこと
+
+1. `internal/fix.ApplyToFile`の`WantAlias == ""`（無alias化）の扱いに**バグがあった**ことに気づき修正した。旧実装は`renameImportSpec`で単純に`ident.Name = newAlias`としており、`newAlias == ""`のとき全ての使用箇所識別子の名前を空文字列にしてしまっていた（`fmt.Println`が`.Println`になり壊れるコードを生成する）。これはFR-7.21（別名除去）が要求する「宣言されている実際のパッケージ名を解決する」処理が今まで未実装だったことによるもので、第6回・第7回のテストは常に「無alias→有alias」方向だけだったため気づかれずに残っていた。`*types.PkgName.Imported().Name()`で実際の宣言パッケージ名（例:"fmt"）を取得し、無alias化の際はそちらを識別子名として使うよう修正した。
+2. `internal/shape`に`NameVisibleAt(info, file, pos, name, except) bool`を新設。あるpositionにおいて、`name`という識別子がすでに(`except`以外の)何らかのオブジェクト（ローカル変数・別のimport・トップレベル宣言等）に束縛されているかを、`(*types.Scope).Innermost(pos)`から`Parent()`を辿ってpackage scopeまで（universe scopeの手前で打ち切り）順にチェックすることで判定する。
+3. `internal/fix.ApplyToFile`に`collides(...)`チェックを追加：あるDecisionの適用先importについて、書き換え後の名前（`resolvedName`）が、そのimportの宣言位置および全ての使用箇所（`shape.SelectorIdentsOf`）のいずれかで、すでに別のオブジェクトに束縛されている場合はリネームをスキップする（trivial transformationの原則＝FR-7.5/FR-7.21の一般化）。
+4. 3つのfixtureで検証：
+   - `testdata/fix/collision_unaliased_to_alias`：`fmt`（無alias）を多数決で`f`にリネームしようとするが、同じ関数内にローカル変数`f`が存在 → **fixはスキップされ、ファイルは無変更**であることを確認。
+   - `testdata/fix/collision_alias_to_unaliased`：`f "fmt"`を多数決で無alias化（`fmt`）しようとするが、同じ関数内にローカル変数`fmt`が存在 → **fixはスキップされ、ファイルは無変更**であることを確認。
+   - `testdata/fix/no_collision_unrelated_scope`：`fmt`（無alias）を`f`にリネームする際、**別の**関数にローカル変数`f`が存在するが、そちらは`fmt`を一切参照していない → **fixは正常に適用され**、結果のファイルは「import別名`f`」と「無関係な関数内のローカル変数`f`」が共存する、普通に有効な(コンパイルが通る)Goコードになることを確認した。
+5. 上記の衝突検出（`NameVisibleAt`）が実際に機能するには、型チェック時に`types.Info.Scopes`を明示的に（非nilマップとして）用意しておく必要があると分かり、既存の`fix_test.go`・`pipeline_test.go`にも`Scopes: map[ast.Node]*types.Scope{}`を追加した（後述の気づき参照）。
+
+## 気づいたこと
+
+1. **既存のシャドーイング（ユーザー指摘の(1)）は、すでに`shape.SelectorIdentsOf`の`types.Info.Uses`ベースの判定だけで正しく除外できていた**ことを、`no_collision_unrelated_scope`のgolden（fix後もローカル変数`f`と import別名`f`が共存する）で確認できた。Goの型チェッカーがスコープ規則を踏まえて`Uses`を解決済みのため、シャドーされた位置の識別子は元々`pkgName`には解決されない。つまり(1)は「今まで通りの実装で既に正しかった」ことの確認であり、コード変更は不要だった。
+2. **`types.Info.Scopes`は他のフィールド（`Defs`/`Uses`/`Implicits`）と同様、非nilマップとして用意しないと型チェッカーが記録してくれない**、というgo/typesのAPIの落とし穴を実地で踏んだ。既存の2つのテストファイルでは`Scopes`を用意していなかったため、もし何もチェックせず先に衝突判定コードだけ書いていたら「衝突判定が常にfalseを返す（静かに無効化される）」というテストが検出しづらいバグになっていたはずで、危うく気づかずに進むところだった。CLI実装時（`go/packages`経由）も同様に、型情報のロードオプションで`Scopes`相当の情報が確実に含まれるようにする必要がある、という実装上の注意点として残る。
+3. **衝突検出の実装（`Scope.Innermost(pos)`から`Parent()`を辿る）は、意図的に保守的（安全側）な近似になっている**：Goの変数スコープは本来「宣言以降、ブロック終端まで」だが、`types.Scope`はブロック内の全オブジェクトを（テキスト上の前後関係を区別せず）保持しているため、たとえ対象のimport使用箇所がローカル変数の宣言より**前**にあり、技術的には安全にリネームできるケースであっても、同じブロックに同名のローカル変数が存在するというだけで衝突と判定してしまう。これは「怪しければ直さない」というtrivial transformationの精神には合致しており、間違って壊れたコードを生成するよりは安全側に倒すべきだと判断したが、将来的により精密な「宣言前後」判定をすべきかは未検討のまま残した（→PRE-22）。
+4. **`NameVisibleAt`はuniverse scope（`len`・`cap`等の組み込み識別子）との衝突は意図的にチェックしていない**。これも軽微だが、多数決の結果として例えば別名が`len`になるような極端なケースは理論上あり得るため、チェック範囲の境界として明文化しておく必要がある論点だと気づいた（→PRE-22であわせて整理）。
+
+## 次にやること
+
+- 上記の気づき3・4を`docs/01decision.pre.md`にPRE-22としてまとめて追記した。
+- FR-7.21（別名除去）は今回、衝突検出も含めて実質的にカバーできた形になった。ただし「宣言パッケージ名の解決」と「衝突検出」は今回`internal/fix`単体のテスト（手組みのDecision）でのみ検証しており、`decide.Decide`が実際に`WantAlias == ""`を多数決の結果として選ぶケース（＝無aliasが多数派）をscan/decide経由のパイプラインテストではまだ確認していない。次のイテレーションで`internal/fix/pipeline_test.go`のようなE2Eテストにこのケースを追加できるとよい。
+- 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。

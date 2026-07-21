@@ -38,3 +38,27 @@
 - **背景**: DEC-11.6は`internal/fix`が`astutil.AddNamedImport`/`DeleteNamedImport`を使う設計としていたが、第6回で実装した「同一importパスのまま別名だけを直す」最小ケースでは、既存`*ast.ImportSpec.Name`を直接書き換えるだけで足り、astutilは不要だった。
 - **論点**: FR-6.11の解決（別名→複数pathの片方に寄せる）やFR-7.21（別名除去＋識別子衝突チェック）では、import宣言そのものの追加・削除が必要になり、direct mutationでは足りずastutilが要ると予想される。`internal/fix`内で「単純リネームはdirect mutation、path追加/削除はastutil」と実装を使い分けるのか、一貫性のために常にastutil経由にするのか、DEC-11.6の適用範囲を明確にする必要がある。
 - **推奨（デフォルト）**: 単純な別名リネーム（importパス不変）はdirect mutationのまま維持し、importパスの追加・削除を伴うケースのみastutilを使う、と使い分けを明文化する（DEC-11.6を「path追加/削除を伴う場合」に限定するかたちで補足する）。
+
+---
+
+## 第7回（マルチファイル多数決 + 使用箇所診断の実験）で見つかった論点
+
+`docs/02notice.md`第7回：fixのgolden testを本物のマルチファイル入力（scan→decide→fix経由）に拡張し、go vetの診断位置を「使用箇所（fix対象そのもの）」にする実験を行った際に見つかった論点。
+
+### PRE-21: `internal/scan`も型情報（`*types.Info`）を明示引数として受け取る設計を、DEC-11.3の原則として`internal/fix`だけでなく`internal/scan`にも明文で拡張すべきか
+
+- **背景**: DEC-11.3は「`internal/fix`は`*types.Info`/`*types.Package`を呼び出し側からの明示引数として受け取り、`internal/fix`自身は`golang.org/x/tools/go/packages`を呼ばない」と定めていたが、`internal/scan`については型情報の要否に触れていなかった。第7回で、診断を使用箇所単位に出すため`internal/scan.FromFiles`にも`typesInfo *types.Info`引数（nil許容）を追加する必要が生じた。go vet Analyzer（D1）は`pass.TypesInfo`をdriverから無償で受け取れるため影響がなかったが、CLI（D2）側は今後「`internal/fix`向けだけでなく`internal/scan`向けにも型情報付きで`go/packages`をロードする」実装が必要になる。
+- **論点**: これは`internal/scan`のAPI契約（型情報を必須にするか、任意にするか）およびCLI（D2）の実装順序（型情報ロードのタイミング）に関わる、パッケージ間の責務分担の話であり、原則レベルの論点と判断した。
+- **推奨（デフォルト）**: DEC-11.3の適用範囲を`internal/scan`にも明示的に拡張し、「`internal/scan`・`internal/fix`はともに`*types.Info`を呼び出し側からの明示・任意引数として受け取り、`go/packages`のロードはCLI（`cmd/goimportalias`）の責務に一本化する」と補足する。型情報がnilの場合、`internal/scan`は`Occurrence.UsePos`を空のまま返し（診断はimport宣言行にフォールバック）、go vet Analyzerのように型情報が常に手に入る文脈でも、CLIのように明示ロードが要る文脈でも同じAPIで動作する。
+
+---
+
+## 第8回（import別名とローカル変数名の衝突検出）で見つかった論点
+
+`docs/02notice.md`第8回：`internal/fix`のリネーム処理にFR-7.21相当の識別子衝突チェックを実装し、`fmt→f`・`f→fmt`両方向で衝突時にfixがスキップされることを検証した際に見つかった、衝突判定の精度・範囲に関する論点。
+
+### PRE-22: 識別子衝突チェック（`shape.NameVisibleAt`）の判定範囲をどこまで厳密/保守的にするか
+
+- **背景**: 実装した衝突チェックは2点、意図的に保守的な近似になっている。(a) 同一ブロック内であれば、対象のimport使用箇所がローカル変数の宣言より**前**にあり技術的には安全な場合でも「同名のローカル変数が同じブロックに存在する」というだけで衝突と判定する（Goの「宣言以降スコープに入る」という前後関係を区別しない）。(b) universe scope（`len`・`cap`等の組み込み識別子）との衝突は範囲外としている。
+- **論点**: (a)は「疑わしきはfixしない」というtrivial transformationの原則には合致するが、本来fixできたはずのケースを取りこぼす（過剰に保守的な）可能性がある。(b)は多数決の結果として別名が組み込み識別子と同じ文字列になる、という極端だが理論上あり得るケースを無視している。どちらも「衝突判定の完成度」という、`internal/fix`のAPI契約・振る舞いに関わる原則レベルの論点だが、(a)は要件(FR-7.5「安全でなければ直さない」)に照らせば現状の保守的な挙動で十分という考え方もでき、単なる実装の詰めの甘さではなく積極的な設計判断でもある。
+- **推奨（デフォルト）**: 現状の保守的な近似（ブロック単位・universe scope対象外）を正式な仕様として採用する。「宣言前後」まで区別する精密な判定や、universe scopeとの衝突チェックは、実際にそれが原因でfixが不必要にスキップされる事例が`docs/fix-cases.md`のケース収集の中で出てきた場合にのみ、対応を検討する。
