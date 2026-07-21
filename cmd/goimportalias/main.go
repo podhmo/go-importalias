@@ -155,9 +155,9 @@ func applyFixes(fset *token.FileSet, pkgs []*packages.Package, cfg *shape.File, 
 			Package:       pkg.PkgPath,
 			SkipGenerated: opts.skipGenerated,
 		})
-		decisions, _, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: opts.strict})
+		decisions, collisions, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: opts.strict})
 		for _, file := range pkg.Syntax {
-			src, changed, err := fix.ApplyToFileWithDuplicates(fset, file, pkg.TypesInfo, decisions, duplicates)
+			src, changed, err := fix.ApplyToFileWithCollisionsAndDuplicates(fset, file, pkg.TypesInfo, decisions, collisions, duplicates)
 			if err != nil {
 				return err
 			}

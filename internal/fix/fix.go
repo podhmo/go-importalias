@@ -1,11 +1,12 @@
 // Package fix rewrites a file's import clause and matching qualified
 // identifiers to the alias decided by internal/decide.
 //
-// This experiment only handles the "rename an existing alias to the decided
-// majority alias" case (no astutil-style add/delete of import specs). It
-// does implement FR-7.21's collision check (skip the rewrite if the
-// resulting identifier would collide with something already in scope,
-// e.g. a local variable) for this rename case; see docs/02notice.md round 8.
+// This experiment handles the "rename an existing alias to the decided
+// majority alias" case, FR-6.16 duplicate imports, and the safe FR-6.11
+// collision case where one colliding path can be unaliased. It implements
+// FR-7.21's collision check (skip the rewrite if the resulting identifier
+// would collide with something already in scope, e.g. a local variable); see
+// docs/02notice.md round 8.
 package fix
 
 import (
@@ -29,7 +30,7 @@ import (
 // collide with a local variable, another import, a top-level declaration,
 // etc.).
 func ApplyToFile(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision) (src []byte, changed bool, err error) {
-	return ApplyToFileWithDuplicates(fset, file, typesInfo, decisions, nil)
+	return ApplyToFileWithCollisionsAndDuplicates(fset, file, typesInfo, decisions, nil, nil)
 }
 
 // ApplyToFileWithDuplicates is ApplyToFile plus FR-6.16 handling: within one
@@ -37,6 +38,19 @@ func ApplyToFile(fset *token.FileSet, file *ast.File, typesInfo *types.Info, dec
 // into the canonical alias decided by internal/decide, and surplus import
 // specs are removed.
 func ApplyToFileWithDuplicates(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision, duplicates []shape.DuplicateImport) (src []byte, changed bool, err error) {
+	return ApplyToFileWithCollisionsAndDuplicates(fset, file, typesInfo, decisions, nil, duplicates)
+}
+
+// ApplyToFileWithCollisions is ApplyToFile plus FR-6.11 handling: for one
+// explicit alias used by multiple import paths, keep the first path reported
+// by internal/decide and unalias the remaining paths when that is safe.
+func ApplyToFileWithCollisions(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision, collisions []shape.AliasCollision) (src []byte, changed bool, err error) {
+	return ApplyToFileWithCollisionsAndDuplicates(fset, file, typesInfo, decisions, collisions, nil)
+}
+
+// ApplyToFileWithCollisionsAndDuplicates applies all currently supported fix
+// axes in one pass.
+func ApplyToFileWithCollisionsAndDuplicates(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision, collisions []shape.AliasCollision, duplicates []shape.DuplicateImport) (src []byte, changed bool, err error) {
 	for _, d := range decisions {
 		if d.Tie {
 			continue
@@ -67,6 +81,9 @@ func ApplyToFileWithDuplicates(fset *token.FileSet, file *ast.File, typesInfo *t
 			changed = true
 		}
 	}
+	if applyAliasCollisions(fset, file, typesInfo, collisions) {
+		changed = true
+	}
 	if applyDuplicateImports(fset, file, typesInfo, decisions, duplicates) {
 		changed = true
 	}
@@ -80,6 +97,41 @@ func ApplyToFileWithDuplicates(fset *token.FileSet, file *ast.File, typesInfo *t
 		return nil, false, err
 	}
 	return buf.Bytes(), true, nil
+}
+
+func applyAliasCollisions(fset *token.FileSet, file *ast.File, typesInfo *types.Info, collisions []shape.AliasCollision) bool {
+	changed := false
+	for _, c := range collisions {
+		if len(c.Occurrences) <= 1 {
+			continue
+		}
+		for _, occ := range c.Occurrences[1:] {
+			spec := findImportSpecAt(file, occ.Pos)
+			if spec == nil || importAlias(spec) != c.Alias {
+				continue
+			}
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil || path != occ.Path {
+				continue
+			}
+			pkgName := shape.PkgNameOf(typesInfo, spec)
+			if pkgName == nil {
+				continue
+			}
+			resolvedName := pkgName.Imported().Name()
+			if resolvedName == c.Alias || collides(typesInfo, file, spec, pkgName, resolvedName) {
+				continue
+			}
+			if !replaceImport(fset, file, c.Alias, "", occ.Path) {
+				continue
+			}
+			for _, ident := range shape.SelectorIdentsOf(file, typesInfo, pkgName) {
+				ident.Name = resolvedName
+			}
+			changed = true
+		}
+	}
+	return changed
 }
 
 func applyDuplicateImports(fset *token.FileSet, file *ast.File, typesInfo *types.Info, decisions []shape.Decision, duplicates []shape.DuplicateImport) bool {
@@ -179,6 +231,17 @@ func importAlias(spec *ast.ImportSpec) string {
 		return ""
 	}
 	return spec.Name.Name
+}
+
+func replaceImport(fset *token.FileSet, file *ast.File, oldAlias, newAlias, path string) bool {
+	added := astutil.AddNamedImport(fset, file, newAlias, path)
+	if !astutil.DeleteNamedImport(fset, file, oldAlias, path) {
+		if added {
+			astutil.DeleteNamedImport(fset, file, newAlias, path)
+		}
+		return false
+	}
+	return true
 }
 
 func findImportSpecAt(file *ast.File, pos token.Pos) *ast.ImportSpec {
