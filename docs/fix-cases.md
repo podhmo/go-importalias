@@ -43,3 +43,17 @@
 - **入力の要点**: `f "fmt"` が import され、`f.Println` が使われている。`fmt` と衝突するローカル識別子は存在しない。
 - **期待される出力**: import が無 alias の `fmt` になり、参照が `fmt.Println` に書き換わる。
 - **根拠 FR・DEC**: FR-6.10、DEC-3.1、DEC-7.2。
+
+## duplicate_import_merge
+
+- **目的**: 単一ファイル内で同一 import path が複数 alias で import されている場合に、package-wide majority で定まった canonical alias へ統合し、余剰 import を削除できることを確認する。
+- **入力の要点**: `foo.go` で `fmt` が `f` と `oldfmt` の 2 alias で import され、別ファイル `bar.go` も `f "fmt"` を使うため `f` が canonical になる。
+- **期待される出力**: `oldfmt.Println` が `f.Println` に書き換わり、`oldfmt "fmt"` の import が削除される。`bar.go` は変わらない。
+- **根拠 FR・DEC**: FR-6.16、FR-7.16、DEC-11.20。
+
+## duplicate_import_collision
+
+- **目的**: 重複 import を canonical alias へ統合するとローカル識別子と衝突する場合に、危険な auto-fix をスキップできることを確認する。
+- **入力の要点**: `main.go` で `fmt` が `f` と `oldfmt` の 2 alias で import され、`oldfmt` の利用箇所ではローカル変数 `f` が見えている。別ファイル `other.go` も `f "fmt"` を使うため `f` が canonical になる。
+- **期待される出力**: `oldfmt.Println` から `f.Println` への変更は行わず、入力と同じ内容のままにする。
+- **根拠 FR・DEC**: FR-6.16、FR-7.16、DEC-11.20、FR-7.5。

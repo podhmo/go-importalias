@@ -29,7 +29,6 @@
 | # | issue | 概要 | 対象 DEC/FR |
 |---|---|---|---|
 | 09 | [fr6.11-autofix](./09-fr6.11-autofix.md) | FR-6.11 の auto-fix（import path 追加・削除） | DEC-3.1 / DEC-11.20 / DEC-11.6 |
-| 10 | [fr6.16-autofix](./10-fr6.16-autofix.md) | FR-6.16 の auto-fix（重複 import 統合・削除） | FR-7.16 / DEC-11.20 |
 
 ### ドキュメント・インフラ
 
