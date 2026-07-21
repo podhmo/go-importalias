@@ -18,7 +18,6 @@
 
 | # | issue | 概要 | 対象 DEC/FR |
 |---|---|---|---|
-| 03 | [fr6.16-detection](./03-fr6.16-detection.md) | FR-6.16（単一ファイル内の重複 import）検出 | FR-6.16 |
 | 04 | [analyzer-config-and-flags](./04-analyzer-config-and-flags.md) | analyzer の config 読込・ignore・strict flag | DEC-11.2 / FR-5.10〜5.12 / DEC-3.2 |
 
 ### D2（CLI）基盤

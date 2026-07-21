@@ -50,7 +50,7 @@ func TestPipeline_MultiFileMajority(t *testing.T) {
 	}
 
 	occs := scan.FromFiles(fset, files, info, scan.Options{Package: pkg})
-	decisions, collisions := decide.Decide(occs, nil, decide.Options{})
+	decisions, collisions, _ := decide.Decide(occs, nil, decide.Options{})
 	if len(collisions) != 0 {
 		t.Fatalf("Decide reported %d alias collisions, want 0 (this fixture only exercises FR-6.10 majority voting): %+v", len(collisions), collisions)
 	}

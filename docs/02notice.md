@@ -262,3 +262,30 @@
 - FR-6.11・FR-6.16・generated file skip・CLI本体（`cmd/goimportalias`）は引き続き未実装のまま。DEC-10.1の実装着手順（4節以降）に沿って次のイテレーションで着手できる。
 - DEC-11.22（識別子衝突チェックの精密化）は、実装着手のタイミングが来たら`docs/fix-cases.md`のケース収集と合わせて対応する。
 - 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。
+
+---
+
+# 第11回：FR-6.16（単一ファイル内の重複 import）検出を実装（issue 03）
+
+- **日付**: 2026-07-21（同日）
+- **本書の位置づけ**: `docs/issues/03-fr6.16-detection.md`（依存なし・着手可能）を実装した回。第10回時点の「次にやること」に残っていたFR-6.16のうち、検出のみ（auto-fixはissue 10）を対象にした。
+
+## やったこと
+
+1. `internal/decide/decide.go`のpackage docが明示していた「FR-6.16はスコープ外」を解消し、`Decide`にFR-6.11（`byAlias`）と全く同じ形の第3の軸として`byFile map[fileKey][]shape.Occurrence`を追加。`fileKey{pkg, file, path}`でグルーピングし、同一グループ内でdistinct aliasが2つ以上あるものだけを`shape.DuplicateImport`として返すようにした（`Decide`の戻り値を3値`([]Decision, []AliasCollision, []DuplicateImport)`に変更）。
+2. `internal/shape/model.go`の`Occurrence`に`File string`フィールドを追加し、`internal/scan/scan.go`で`isTest`と全く同じタイミング（`fset.Position(file.Pos()).Filename`）で埋めるようにした。`shape.DuplicateImport`型も新設。
+3. `analyzer.go`に3番目の報告ループを追加し、`DuplicateImport`の全Occurrence（重複しているimport宣言行それぞれ）に対して`import %q is imported multiple times in this file with different aliases`を報告するようにした。
+4. `Decide`のシグネチャ変更に伴い、既存の呼び出し側（`internal/decide/decide_test.go`・`internal/fix/pipeline_test.go`）を3値受け取りに更新。
+5. `testdata/src/dupinfile/a.go`（1ファイル内で`"fmt"`を`f`/`g`の2 aliasでimport）を新設し、`analyzer_test.go`に`TestAnalyzer_DuplicateImportInSameFile`を追加。`internal/decide/decide_test.go`にも`TestDecide_DuplicateImports`をテーブル駆動で追加（同一ファイル内で検出／ファイル跨ぎでは不検出／同一alias2回は不検出、の3ケース）。
+
+## 気づいたこと
+
+1. **「file単位の情報はscanにしかない」という issue の前提は、Occurrenceにfilenameを1フィールド足すだけで解消できた**。`internal/scan.FromFiles`は元々`isTest`用に`fset.Position(file.Pos()).Filename`をper-file computeしていた（第7回で確認したisTestと同じパターン）ので、それをOccurrenceに載せて運ぶだけで、`internal/decide`側は追加のfsetを持つ必要も、`FromFiles`のシグネチャ（戻り値の数）を変える必要もなかった。結果として、FR-6.16の実際の検出ロジック（グルーピングと閾値判定）は、FR-6.11の`byAlias`と全く同じ形でdecide.go内に third axis として実装できた——scan/decideのどちらに置くか、という問いは「filenameというデータをどちらに置くか」と「グルーピングの判定ロジックをどちらに置くか」を分けて考えると、両方をdecideに寄せる方が既存のFR-6.11の実装パターンとの一貫性が高く、変更範囲も小さかった。
+2. **同一alias・同一pathの重複importは有効なGoでは発生しない**（`f "fmt"; f "fmt"`は同一識別子の再宣言でコンパイルエラーになる）ため、`Decide`のdistinct alias判定はテストのために作った人工的なOccurrence列に対する防御的なガードに過ぎない。一方、`f "fmt"; g "fmt"`（同一path・異なるalias）は`go build`で実際にコンパイルが通ることを確認済み（一見冗長だが有効なGo）。
+3. **既存のFR-6.10フィクスチャ（`dup`）が無変更のままgreenであること自体が、FR-6.16との非混同の実証になっている**。`analysistest`は期待していないdiagnosticsが出るとfailするため、`dup`パッケージ（複数ファイル・majority vote）が今回の変更後も新たなdiagnosticsを出さないことを確認できれば、それだけで「ファイル跨ぎの多数決」と「単一ファイル内の重複」が誤って混同されていないことの十分な証拠になる。issue 03の終了条件2番目はこの形で満たした。
+
+## 次にやること
+
+- FR-6.16のauto-fix（issue 10）は`internal/fix`側の作業として引き続き未着手。今回追加した`shape.DuplicateImport`（Occurrencesを全件保持）がそのまま入力になる想定。
+- 残るD1系はissue 04（analyzer config・ignore・strict flag）のみ。
+- 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。

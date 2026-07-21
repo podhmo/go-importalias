@@ -46,7 +46,8 @@ func FromFiles(fset *token.FileSet, files []*ast.File, typesInfo *types.Info, op
 		if opts.SkipGenerated && genfile.IsGenerated(file) {
 			continue
 		}
-		isTest := strings.HasSuffix(fset.Position(file.Pos()).Filename, "_test.go")
+		filename := fset.Position(file.Pos()).Filename
+		isTest := strings.HasSuffix(filename, "_test.go")
 		for _, imp := range file.Imports {
 			path, err := strconv.Unquote(imp.Path.Value)
 			if err != nil {
@@ -73,6 +74,7 @@ func FromFiles(fset *token.FileSet, files []*ast.File, typesInfo *types.Info, op
 				Alias:   alias,
 				Pos:     imp.Pos(),
 				IsTest:  isTest,
+				File:    filename,
 				UsePos:  usePos,
 			})
 		}

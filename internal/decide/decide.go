@@ -1,10 +1,13 @@
 // Package decide decides the "correct" alias for each (package, path) pair
 // observed by internal/scan: explicit config wins over majority vote, and an
 // unresolved multi-way tie is left for a human to collapse. It also detects
-// FR-6.11 (one alias used for multiple import paths) as a separate axis.
+// FR-6.11 (one alias used for multiple import paths) and FR-6.16 (one import
+// path aliased more than once within a single file) as separate axes.
 //
-// FR-6.16 (duplicate same-path imports within a single file) is out of scope
-// here; see docs/02notice.md round 6.
+// FR-6.16 is scoped per-file (keyed on shape.Occurrence.File), unlike
+// FR-6.10/FR-6.11 which are scoped per-package across files; see
+// docs/02notice.md round 11 for why the file-scoped grouping lives here
+// rather than in internal/scan.
 package decide
 
 import (
@@ -22,18 +25,25 @@ type Options struct {
 
 type pathKey struct{ pkg, path string }
 type aliasKey struct{ pkg, alias string }
+type fileKey struct{ pkg, file, path string }
 
 // Decide groups occs by (package, path) and decides the "correct" alias for
 // each group (FR-6.10): config priority, then majority vote, then tie. It
 // separately groups occs by (package, alias) to detect one alias mapped to
 // more than one distinct import path (FR-6.11, DEC-11.12); occurrences with
-// no alias are excluded from that axis.
-func Decide(occs []shape.Occurrence, cfg *shape.File, opts Options) ([]shape.Decision, []shape.AliasCollision) {
+// no alias are excluded from that axis. It also groups occs by (package,
+// file, path) to detect one import path aliased more than once within the
+// same file (FR-6.16).
+func Decide(occs []shape.Occurrence, cfg *shape.File, opts Options) ([]shape.Decision, []shape.AliasCollision, []shape.DuplicateImport) {
 	byPath := map[pathKey][]shape.Occurrence{}
 	byAlias := map[aliasKey]map[string]shape.Occurrence{}
+	byFile := map[fileKey][]shape.Occurrence{}
 	for _, o := range occs {
 		pk := pathKey{o.Package, o.Path}
 		byPath[pk] = append(byPath[pk], o)
+
+		fk := fileKey{o.Package, o.File, o.Path}
+		byFile[fk] = append(byFile[fk], o)
 
 		if o.Alias == "" {
 			continue
@@ -97,7 +107,44 @@ func Decide(occs []shape.Occurrence, cfg *shape.File, opts Options) ([]shape.Dec
 		})
 	}
 
-	return decisions, collisions
+	fileKeys := make([]fileKey, 0, len(byFile))
+	for k := range byFile {
+		fileKeys = append(fileKeys, k)
+	}
+	sort.Slice(fileKeys, func(i, j int) bool {
+		if fileKeys[i].pkg != fileKeys[j].pkg {
+			return fileKeys[i].pkg < fileKeys[j].pkg
+		}
+		if fileKeys[i].file != fileKeys[j].file {
+			return fileKeys[i].file < fileKeys[j].file
+		}
+		return fileKeys[i].path < fileKeys[j].path
+	})
+
+	var duplicates []shape.DuplicateImport
+	for _, fk := range fileKeys {
+		group := byFile[fk]
+		if len(group) <= 1 {
+			continue
+		}
+		distinct := map[string]bool{}
+		for _, o := range group {
+			distinct[o.Alias] = true
+		}
+		if len(distinct) <= 1 {
+			continue // same alias repeated for this path isn't valid Go; defensive guard only
+		}
+		sorted := append([]shape.Occurrence(nil), group...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Pos < sorted[j].Pos })
+		duplicates = append(duplicates, shape.DuplicateImport{
+			Package:     fk.pkg,
+			File:        fk.file,
+			Path:        fk.path,
+			Occurrences: sorted,
+		})
+	}
+
+	return decisions, collisions, duplicates
 }
 
 func decideOne(pkg, path string, group []shape.Occurrence, cfg *shape.File, opts Options) shape.Decision {

@@ -37,7 +37,7 @@ func run(pass *analysis.Pass) (any, error) {
 		Package:       pass.Pkg.Path(),
 		SkipGenerated: skipGenerated,
 	})
-	decisions, collisions := decide.Decide(occs, nil, decide.Options{})
+	decisions, collisions, duplicates := decide.Decide(occs, nil, decide.Options{})
 
 	for _, d := range decisions {
 		if d.Tie {
@@ -63,6 +63,11 @@ func run(pass *analysis.Pass) (any, error) {
 			continue // AliasCollision always has len>=2 Occurrences; zero-value defense only.
 		}
 		pass.Reportf(c.Occurrences[0].Pos, "alias %q is used for multiple import paths in this package", c.Alias)
+	}
+	for _, dup := range duplicates {
+		for _, o := range dup.Occurrences {
+			pass.Reportf(o.Pos, "import %q is imported multiple times in this file with different aliases", dup.Path)
+		}
 	}
 	return nil, nil
 }
