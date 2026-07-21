@@ -92,6 +92,7 @@ func runCLI(args []string) int {
 	}
 
 	found := false
+	fresh := shape.NewFile()
 	for _, pkg := range pkgs {
 		if cfg.IgnoresPackage(pkg.PkgPath) {
 			continue
@@ -101,6 +102,7 @@ func runCLI(args []string) int {
 			SkipGenerated: opts.skipGenerated,
 		})
 		decisions, collisions, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: opts.strict})
+		fresh.Packages[pkg.PkgPath] = decisionsToConfig(decisions)
 		if reportDecisions(fset, decisions) {
 			found = true
 		}
@@ -110,6 +112,10 @@ func runCLI(args []string) int {
 		if reportDuplicates(fset, duplicates) {
 			found = true
 		}
+	}
+	if err := shape.Save(opts.config, shape.Merge(cfg, fresh)); err != nil {
+		fmt.Fprintf(os.Stderr, "goimportalias: %v\n", err)
+		return 2
 	}
 	if found {
 		return 1
@@ -122,6 +128,18 @@ type cliOptions struct {
 	config        string
 	strict        bool
 	skipGenerated bool
+}
+
+func decisionsToConfig(decisions []shape.Decision) map[string]shape.AliasValue {
+	out := make(map[string]shape.AliasValue, len(decisions))
+	for _, d := range decisions {
+		if d.Tie {
+			out[d.Path] = shape.AliasValue{Tie: append([]string(nil), d.TieCandidate...)}
+			continue
+		}
+		out[d.Path] = shape.AliasValue{Resolved: d.WantAlias}
+	}
+	return out
 }
 
 func findModuleRoot(start string) (string, error) {
