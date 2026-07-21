@@ -124,6 +124,36 @@ func TestFileLookupPriority(t *testing.T) {
 	}
 }
 
+func TestFileIgnoresPackage(t *testing.T) {
+	cases := []struct {
+		name     string
+		ignore   []string
+		pkg      string
+		wantBool bool
+	}{
+		{"nil-file", nil, "foo/bar", false},
+		{"exact-match", []string{"foo/bar"}, "foo/bar", true},
+		{"exact-no-match", []string{"foo/bar"}, "foo/bar/baz", false},
+		{"prefix-matches-self", []string{"foo/..."}, "foo", true},
+		{"prefix-matches-child", []string{"foo/..."}, "foo/bar", true},
+		{"prefix-no-match-sibling", []string{"foo/..."}, "foobar", false},
+		{"global", []string{"*"}, "anything", true},
+		{"any-pattern-wins", []string{"other", "foo/..."}, "foo/bar", true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var f *File
+			if c.ignore != nil {
+				f = &File{Ignore: c.ignore}
+			}
+			if got := f.IgnoresPackage(c.pkg); got != c.wantBool {
+				t.Fatalf("IgnoresPackage(%q) = %v, want %v", c.pkg, got, c.wantBool)
+			}
+		})
+	}
+}
+
 func TestMerge(t *testing.T) {
 	existing := &File{
 		Ignore: []string{"foo/legacy"},
