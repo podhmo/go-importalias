@@ -113,3 +113,35 @@
 
 - `internal/decide`・`internal/fix`はコンパイルは通るが、テストを一切書いていないため実行時の振る舞いは未検証。DEC-10.1のステップ順（テストハーネス確立が最優先）に従い、次はドラフトをさらに深掘りするより先に、テストハーネスの試作に進むべきタイミングに来ている可能性がある。
 - 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。
+
+---
+
+# 第6回：scan/fixテストハーネスを実際に実装し、`go test ./...`をgreenにする実験
+
+- **日付**: 2026-07-21（同日）
+- **本書の位置づけ**: これまでの5回はすべて`docs/draft.md`（ビルド確認のみ・実行されない参考スケッチ）または`docs/draft/`という一時ディレクトリ止まりだった。今回は初めて`go.mod`を作成し、生きたモジュール直下に`internal/shape`・`internal/scan`・`internal/decide`・`internal/fix`・ルート`analyzer.go`を実装し、DEC-10.1のステップ1〜3（＋最小限のステップ4・7）に相当する「scanのテストハーネス（analysistest）」と「fixのテストハーネス（golden file）」を実際に動かして`go test ./...`をgreenにする実験を行った。スコープは意図的に絞り、FR-6.10（同一path→複数alias）1ケースの検知と、その1ケースの自動修正のみを対象とした。FR-6.11・FR-6.16・generated file skip・CLI本体は今回対象外。
+
+## やったこと
+
+1. `go.mod`（`module github.com/podhmo/go-importalias`, `go 1.26`, `golang.org/x/tools v0.48.0`）を作成。
+2. `internal/shape/model.go`（`Occurrence`/`Decision`/`AliasCollision`）と`internal/shape/config.go`（`File`/`AliasValue`のカスタムJSON、`NewFile`/`Load`/`Save`/`Lookup`/`Merge`）を実装し、round-tripテスト・`Lookup`優先順位テスト・`Merge`テストを`internal/shape/config_test.go`に書いた。
+3. `internal/scan/scan.go`（`FromFiles`）・`internal/decide/decide.go`（`Decide`/`decideOne`、FR-6.10のみ）・ルート`analyzer.go`（`var Analyzer`、`Requires`なし）を実装し、`testdata/src/dup/{a,b,c}.go`と`analyzer_test.go`（`analysistest.Run`）で1ケースを検知させた。
+4. `internal/fix/fix.go`（`ApplyToFile`、既存importの別名を多数決結果にリネームするだけの最小実装）を実装し、`testdata/fix/rename_to_majority/{input,golden}/main.go`と`internal/fix/fix_test.go`（`go/types`単体チェック＋golden比較）で1ケースをgreenにした。
+5. `go build ./...`・`go vet ./...`・`go test ./...`が最終的にすべてエラーなし・全テストPASSであることを確認した。
+
+## 気づいたこと
+
+1. **`inspector.Inspector`は今回のスコープでは本当に不要だった**。`internal/scan.FromFiles`は`file.Imports`を直接ループするだけで実装でき、ルート`analyzer.go`の`Analyzer.Requires`も空（`inspect.Analyzer`への依存なし）のまま`analysistest.Run`によるFR-6.10検知が成立した。`docs/draft.md`で「使う理由が言語化されていない」と保留されていた論点は、少なくとも「import宣言だけを見る」範囲では不要という形で経験的に解消した。ただし将来generated file判定（コメント走査）等でAST全体を舐める処理が増えた場合に再浮上する可能性はある（→PRE-18）。
+2. **`astutil.AddNamedImport`/`DeleteNamedImport`を使わず、既存の`*ast.ImportSpec.Name`を直接書き換えるだけで「別名のリネーム」は成立した**。DEC-11.6はastutilの利用を前提にしていたが、今回試した「同一importパスのまま別名だけを直す」という限定ケースでは、import宣言の追加・削除に相当する複雑さは不要だった。ただしこれは限定ケースでの簡略化であり、FR-6.11の解決やFR-7.21（別名除去＋衝突チェック）のようにimport path自体の追加/削除が要るケースでは、direct mutationでは足りずastutilが必要になると予想される（→PRE-20）。また、import行に行末コメントが付いている場合の位置情報保持は今回のfixtureにコメントを置かなかったため未検証のまま。
+3. **fixのgolden testにおける型情報取得は、`go/packages`を使わず`go/parser.ParseFile` + `go/types.Config{Importer: importer.Default()}.Check(...)`という単体ファイルの型チェックだけで足りた**。標準ライブラリのみをimportする最小ケースに限れば、`go/packages`のモジュール解決・キャッシュといった重さを回避できることが実験で確認できた。一方で、複数ファイル間でのシンボル参照や外部モジュールの型情報が必要になる本格的なfixケースでは、単体ファイルチェックでは他ファイルの型情報が見えないため成立せず、`go/packages`（または対象パッケージの全ファイルをまとめて`types.Config.Check`に渡す方式）へ切り替える必要が出てくると見込まれる。「単体ファイルチェックで足りるケース」と「複数ファイルロードが要るケース」の境界線は、`docs/fix-cases.md`を書き始める際にケースごとに注記すべき運用上の論点であり、DEC-7.5が言う「実装しながら決める」対象そのものと判断し、新たなPRE化は見送った。
+4. **fixのgolden test実行方式は、`cmd/goimportalias`バイナリを実際に起動する（`os/exec`等）のではなく、`internal/fix.ApplyToFile`をin-processで直接呼び出し、返り値の`[]byte`をgoldenファイルとバイト比較するだけで成立した**。DEC-10.1ステップ3が想定していた「minimal cmd/goimportalias CLI」を経由しない設計。CLIレイヤー（モジュールルート探索・config読み書き・複数パッケージの逐次処理）は、この粒度のfixロジック単体テストの対象外にできることが分かった。これもDEC-7.5の「実装しながら決める」対象と判断し、PRE化は見送った。
+5. **`internal/scan.FromFiles`は、blank import（`_`）やdot import（`.`）もそのまま`Occurrence.Alias`に入れてしまう**ことに気づいた（今回のfixtureでは意図的に避けたため実害はなかったが、実装上は無防備）。これらは多数決の候補に含めるべきではない特殊ケースだが、`docs/00origin.md`・`docs/01decision.md`のどちらにも明記がなく、今回も対応していない（→PRE-19）。
+6. **`analysistest`の`// want`コメントは、診断が報告された行と同じ行に置く必要がある**ことを実地で確認した。`Occurrence.Pos`は`imp.Pos()`（`*ast.ImportSpec`の位置：明示aliasがあればそのalias名の位置、なければpath文字列の位置）から取っているため、`// want`はimport宣言の行に置く必要があり、実際にその識別子を使っている行（`fmt.Println(...)`等）には置けない。最初に使用箇所へ`// want`を置いて1回テストが赤くなり、import宣言の行に移して green になった。
+7. **goplsが`internal/shape/config.go`の`Merge`実装（2つの`for range`ループ）に対し、`maps.Copy`への置換を再度提案してきた**。これは第4回でドラフト段階で観測した指摘と全く同じもので、今回は実際に`maps.Copy`へ書き換えた上で`go test`がgreenのままであることを確認した（再現性のある、素直に採用してよい指摘だと判断）。
+8. 上記のうち、「原則レベル（他パッケージとの責務分担・データ型設計に関わり、後から変えるとコストが大きい）」に該当する論点（PRE-18〜PRE-20）のみを`docs/01decision.pre.md`に切り出した。「実装しながらでないと判断できないテストハーネスの機械的な仕組み」（項目3・4）はADR-00の基準に従いPRE化せず、本ノートの知見に留めている。
+
+## 次にやること
+
+- `docs/01decision.pre.md`のPRE-18〜PRE-20についてユーザー確認を得て、`docs/01decision.md`にDEC-として追記する。
+- FR-6.11（同一alias→複数path）・FR-6.16（同一ファイル内重複import）・generated file skip・CLI本体（`cmd/goimportalias`）は今回スコープ外のまま。次のイテレーションで対象を広げる際は、今回確立したscan/fixそれぞれのテストハーネス（`testdata/src/<pkg>`+`analysistest`、`testdata/fix/<case>`+golden比較）にケースを追加していく形で進められる見込み。
+- 保留：`02notice.md`自体の構成見直し（第2回から持ち越し、引き続き保留中）。
