@@ -30,7 +30,7 @@
 - import name は file block に入る。別 import と同じ import name になる rewrite は invalid。
 - package-level の `var` / `const` / `type` / `func` と、いずれかのファイルの import name が同名になる package は invalid。これは同一ファイルだけでなく別ファイルでも invalid。
 - 関数内ローカル宣言は宣言位置以降だけ有効。したがって同一ブロックでも「import 使用 → 後続で同名ローカル変数宣言」は valid だが、「同名ローカル変数宣言 → import 使用」は invalid / 意味破壊になる。
-- inner block・closure・`init` は特別扱い不要で、通常の lexical scope と宣言位置で判定できる。closure の parameter / named result / type parameter / receiver は closure body 内で import name を隠す。
+- inner block・closure・`init` は特別扱い不要で、通常の lexical scope と宣言位置で判定できる。通常関数・メソッド・closure の parameter、named result、type parameter、method receiver は、その関数 body 内で import name を隠す。
 - 外側ブロックの同名ローカル変数が closure literal より前で宣言されていれば、closure 内の import 使用も shadow される。closure literal より後の宣言なら、その closure 内からは見えない。
 - `for` / `if` / `switch` の init statement で宣言された名前は、それぞれの body / case 内で import name を隠す。`range` 変数も loop body 内で隠す。
 - label、struct field、method name、selector の field/method は通常識別子とは別名前空間なので、import qualifier rename とは衝突しない。ただし method receiver 変数名は通常の parameter と同じく衝突し得る。
@@ -46,6 +46,7 @@
 | 同一 block に同名 local があるが、その宣言は全使用箇所より後 | valid | rewrite 可 | object の宣言位置と使用位置を比較 |
 | inner block 内だけに同名 local があり、import 使用は外側だけ | valid | rewrite 可 | innermost scope からの可視性判定 |
 | inner block / closure 内の import 使用が parameter・local・type parameter・receiver に隠される | invalid / 意味破壊 | skip | function literal を含む通常 scope 判定 |
+| 通常関数・メソッドの引数名、named return、receiver 名、type parameter が import 使用を隠す | invalid / 意味破壊 | skip | 関数 signature が作る scope を使用位置で判定 |
 | `init` 内で同名 local と衝突 | 通常関数と同じ | 通常関数と同じ | 特別扱いせず scope 判定 |
 | `for` / `if` / `switch` init 変数、range 変数と body 内使用が衝突 | invalid / 意味破壊 | skip | statement-created scope の可視性判定 |
 | label / field / method name と同名 | valid | 無視 | `types.Object` の通常スコープに出ないものは衝突扱いしない |
