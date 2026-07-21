@@ -22,7 +22,10 @@ import (
 // "fmt" -> alias "f", and alias "f" -> unaliased "fmt"). A pre-existing,
 // unrelated same-named local variable elsewhere in the file (a different,
 // non-overlapping scope) must NOT block the rewrite — that's just ordinary
-// Go shadowing and isn't this tool's concern. See docs/02notice.md round 8.
+// Go shadowing and isn't this tool's concern. It also covers the successful
+// (no collision) alias-removal direction end to end, which earlier rounds
+// only ever exercised via the collision-blocked case — see docs/02notice.md
+// round 9.
 func TestApplyToFile_Collision(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -46,6 +49,12 @@ func TestApplyToFile_Collision(t *testing.T) {
 			name:        "unrelated_same_named_var_in_other_scope_does_not_block",
 			dir:         "../../testdata/fix/no_collision_unrelated_scope",
 			wantAlias:   "f",
+			wantChanged: true,
+		},
+		{
+			name:        "alias_to_unaliased_no_collision",
+			dir:         "../../testdata/fix/unalias_no_collision",
+			wantAlias:   "",
 			wantChanged: true,
 		},
 	}

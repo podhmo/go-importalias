@@ -23,6 +23,11 @@ type Options struct {
 // import declarations are plain top-level data on *ast.File, so no
 // traversal machinery is needed (see docs/02notice.md round 6).
 //
+// Blank imports (alias "_") and dot imports (alias ".") are excluded: they
+// aren't part of the "which alias is correct" question this tool answers,
+// and letting them leak into internal/decide's majority vote would corrupt
+// it (DEC-11.19).
+//
 // typesInfo is optional (may be nil, in which case Occurrence.UsePos is left
 // empty). When provided, it must describe files (Defs/Uses/Implicits
 // populated by type-checking exactly these files as one package) — it is
@@ -40,6 +45,9 @@ func FromFiles(fset *token.FileSet, files []*ast.File, typesInfo *types.Info, op
 			alias := ""
 			if imp.Name != nil {
 				alias = imp.Name.Name
+			}
+			if alias == "_" || alias == "." {
+				continue
 			}
 
 			var usePos []token.Pos
