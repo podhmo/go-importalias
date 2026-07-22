@@ -8,6 +8,34 @@ import (
 	"github.com/podhmo/go-importalias/internal/shape"
 )
 
+func TestDecide_StrictKeepsAllCandidatesAndReportsMajorityLosers(t *testing.T) {
+	decisions, _, _ := decide.Decide([]shape.Occurrence{
+		{Package: "p", Path: "fmt", Alias: "f", Pos: 1},
+		{Package: "p", Path: "fmt", Alias: "f", Pos: 2},
+		{Package: "p", Path: "fmt", Alias: "", Pos: 3},
+	}, nil, decide.Options{Strict: true})
+
+	if got, want := len(decisions), 1; got != want {
+		t.Fatalf("len(decisions) = %d, want %d", got, want)
+	}
+	d := decisions[0]
+	if !d.Tie {
+		t.Fatalf("Tie = false, want true so config keeps candidates")
+	}
+	if !reflect.DeepEqual(d.TieCandidate, []string{"", "f"}) {
+		t.Fatalf("TieCandidate = %q, want %q", d.TieCandidate, []string{"", "f"})
+	}
+	if got, want := d.WantAlias, "f"; got != want {
+		t.Fatalf("WantAlias = %q, want %q", got, want)
+	}
+	if got, want := len(d.Inconsistent), 1; got != want {
+		t.Fatalf("len(Inconsistent) = %d, want %d", got, want)
+	}
+	if got, want := d.Inconsistent[0].Alias, ""; got != want {
+		t.Fatalf("Inconsistent[0].Alias = %q, want %q", got, want)
+	}
+}
+
 func TestDecide_AliasCollisions(t *testing.T) {
 	cases := []struct {
 		name string

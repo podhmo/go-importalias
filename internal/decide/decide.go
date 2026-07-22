@@ -18,8 +18,9 @@ import (
 
 // Options controls decision behavior.
 type Options struct {
-	// Strict, when true, treats any multiplicity of aliases for a path as a
-	// tie regardless of vote counts.
+	// Strict, when true, keeps all observed aliases for a path as config
+	// candidates while still computing majority-based diagnostics when a
+	// majority exists.
 	Strict bool
 }
 
@@ -178,12 +179,6 @@ func decideOne(pkg, path string, group []shape.Occurrence, cfg *shape.File, opts
 	}
 	sort.Strings(distinct)
 
-	if opts.Strict && len(distinct) > 1 {
-		d.Tie = true
-		d.TieCandidate = distinct
-		return d
-	}
-
 	maxCount := 0
 	for _, a := range distinct {
 		if counts[a] > maxCount {
@@ -208,6 +203,10 @@ func decideOne(pkg, path string, group []shape.Occurrence, cfg *shape.File, opts
 		if o.Alias != d.WantAlias {
 			d.Inconsistent = append(d.Inconsistent, o)
 		}
+	}
+	if opts.Strict && len(distinct) > 1 {
+		d.Tie = true
+		d.TieCandidate = distinct
 	}
 	return d
 }

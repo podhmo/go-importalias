@@ -154,6 +154,62 @@ func C() { f.Println("c") }
 `)
 }
 
+func TestCLIScanStrictKeepsAllCandidatesAndReportsMajorityLosers(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import "fmt"
+
+func B() { fmt.Println("b") }
+`,
+		"c.go": `package p
+
+import f "fmt"
+
+func C() { f.Println("c") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "-strict", "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias -strict exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), `should use alias "f", not no alias`) {
+		t.Fatalf("stdout = %q, want majority-loser diagnostic", stdout.String())
+	}
+	if strings.Contains(stdout.String(), `has unresolved tie`) {
+		t.Fatalf("stdout = %q, want majority diagnostic, not strict tie diagnostic", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertGoFileHashes(t, moduleDir, sourceHashes)
+	assertConfigContent(t, filepath.Join(moduleDir, "importalias.json"), `{
+  "packages": {
+    "example.com/vetfixture": {
+      "fmt": [
+        "",
+        "f"
+      ]
+    }
+  }
+}
+`)
+}
+
 func TestCLIScanReportsInconsistentImportsWhenNoAliasWins(t *testing.T) {
 	tool := buildVetTool(t)
 	moduleDir := writeVetModule(t, map[string]string{
@@ -570,6 +626,37 @@ func B() { f.Println("b") }
   }
 }
 `)
+}
+
+func TestCLIFixRejectsStrict(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+	})
+
+	cmd := exec.Command(tool, "-fix", "-strict", "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 2 {
+		t.Fatalf("goimportalias -fix -strict exit = %d, want 2; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `-strict cannot be used with -fix`) {
+		t.Fatalf("stderr = %q, want strict/fix error", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(moduleDir, "importalias.json")); !os.IsNotExist(err) {
+		t.Fatalf("importalias.json stat error = %v, want not exist", err)
+	}
 }
 
 func TestCLIFixLeavesTieUnchangedAndExitsOne(t *testing.T) {

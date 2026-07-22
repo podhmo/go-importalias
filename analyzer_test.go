@@ -90,7 +90,7 @@ func TestAnalyzer_NoModuleFallsBackToMajority(t *testing.T) {
 	}
 }
 
-func TestAnalyzer_StrictTreatsMultiplicityAsTie(t *testing.T) {
+func TestAnalyzer_StrictStillReportsMajorityLosers(t *testing.T) {
 	if err := importalias.Analyzer.Flags.Set("strict", "true"); err != nil {
 		t.Fatalf("set strict=true: %v", err)
 	}
@@ -101,8 +101,11 @@ func TestAnalyzer_StrictTreatsMultiplicityAsTie(t *testing.T) {
 	})
 
 	diags := runAnalyzer(t, "example.com/p", t.TempDir(), inconsistentSources())
-	if len(diags) != 0 {
-		t.Fatalf("diagnostics = %+v, want none for strict unresolved tie", diags)
+	if got, want := len(diags), 1; got != want {
+		t.Fatalf("diagnostics = %d, want %d: %+v", got, want, diags)
+	}
+	if !strings.Contains(diags[0].Message, `should use alias "f", not no alias`) {
+		t.Fatalf("diagnostic message = %q, want majority-selected alias target", diags[0].Message)
 	}
 }
 

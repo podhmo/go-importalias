@@ -32,7 +32,7 @@ func init() {
 	Analyzer.Flags.BoolVar(&skipGenerated, "skip_generated", true,
 		"skip files carrying a generated-code marker (// Code generated ... DO NOT EDIT.)")
 	Analyzer.Flags.BoolVar(&strictFlag, "strict", false,
-		"treat any multiple aliases for the same import path as an unresolved tie")
+		"keep multiple alias candidates when generating config; vet diagnostics remain majority-based")
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -51,7 +51,7 @@ func run(pass *analysis.Pass) (any, error) {
 	decisions, collisions, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: strictFlag})
 
 	for _, d := range decisions {
-		if d.Tie {
+		if d.Tie && len(d.Inconsistent) == 0 {
 			continue
 		}
 		for _, o := range d.Inconsistent {

@@ -40,9 +40,13 @@ func runCLI(args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.BoolVar(&opts.fix, "fix", false, "apply safe import alias fixes")
 	fs.StringVar(&opts.config, "config", "", "path to importalias.json")
-	fs.BoolVar(&opts.strict, "strict", false, "treat any multiple aliases for the same import path as an unresolved tie")
+	fs.BoolVar(&opts.strict, "strict", false, "keep multiple alias candidates in generated config; cannot be used with -fix")
 	fs.BoolVar(&opts.skipGenerated, "skip-generated", true, "skip files carrying a generated-code marker")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if opts.fix && opts.strict {
+		fmt.Fprintln(os.Stderr, "goimportalias: -strict cannot be used with -fix")
 		return 2
 	}
 	patterns := fs.Args()
@@ -223,7 +227,7 @@ func printPackageErrors(pkgs []*packages.Package) int {
 func reportDecisions(fset *token.FileSet, decisions []shape.Decision) bool {
 	found := false
 	for _, d := range decisions {
-		if d.Tie {
+		if d.Tie && len(d.Inconsistent) == 0 {
 			fmt.Fprintf(os.Stdout, "%s: import %q has unresolved tie among aliases %s\n",
 				d.Package, d.Path, aliasListDisplay(d.TieCandidate))
 			found = true

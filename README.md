@@ -34,7 +34,7 @@ arguments, for example `./...`.
 |---|---|---|
 | `-fix` | `false` | Apply safe automatic fixes. |
 | `-config` | module-root `importalias.json` | Path to the configuration file. |
-| `-strict` | `false` | Treat majority-based decisions strictly. |
+| `-strict` | `false` | When generating config, keep all observed alias candidates instead of collapsing a majority. Cannot be combined with `-fix`. |
 | `-skip-generated` | `true` | Skip files marked with the standard generated-code comment. |
 
 Exit codes:
@@ -47,7 +47,8 @@ Exit codes:
 
 `importalias.json` stores per-package import alias decisions. A value is either
 a string alias, an empty string for no explicit alias, or an array of two or
-more aliases when a majority tie is unresolved.
+more aliases when candidates should remain unresolved (for example a tie, or
+`-strict` config generation).
 
 ```json
 {
