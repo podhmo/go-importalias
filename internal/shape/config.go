@@ -90,7 +90,7 @@ func Load(path string) (*File, error) {
 // encoding/json is already alphabetical; only Tie needs explicit sorting,
 // handled in MarshalJSON).
 func Save(path string, f *File) error {
-	data, err := json.MarshalIndent(f, "", "  ")
+	data, err := json.MarshalIndent(fileForSave(f), "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
@@ -99,6 +99,30 @@ func Save(path string, f *File) error {
 		return fmt.Errorf("write config %s: %w", path, err)
 	}
 	return nil
+}
+
+func fileForSave(f *File) *File {
+	if f == nil {
+		return nil
+	}
+	out := &File{
+		Packages: make(map[string]map[string]AliasValue, len(f.Packages)),
+		Ignore:   f.Ignore,
+	}
+	for pkg, scope := range f.Packages {
+		filtered := make(map[string]AliasValue, len(scope))
+		for path, v := range scope {
+			if !v.IsTie() && v.Resolved == "" {
+				continue
+			}
+			filtered[path] = v
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		out.Packages[pkg] = filtered
+	}
+	return out
 }
 
 // Lookup resolves the config value for (pkg, path), applying the

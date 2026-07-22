@@ -2,6 +2,8 @@ package shape
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -79,6 +81,46 @@ func TestNewFileMarshalsEmptyPackages(t *testing.T) {
 	}
 	if got, want := string(data), `{"packages":null}`; got != want {
 		t.Fatalf("Marshal(File{}) = %s, want %s (nil-map trap)", got, want)
+	}
+}
+
+func TestSaveOmitsResolvedEmptyAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "importalias.json")
+	f := &File{
+		Packages: map[string]map[string]AliasValue{
+			"example.com/only-empty": {
+				"fmt": {Resolved: ""},
+			},
+			"example.com/mixed": {
+				"fmt":     {Resolved: ""},
+				"os":      {Resolved: "osalias"},
+				"strings": {Tie: []string{"s", "str"}},
+			},
+		},
+	}
+
+	if err := Save(path, f); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	want := `{
+  "packages": {
+    "example.com/mixed": {
+      "os": "osalias",
+      "strings": [
+        "s",
+        "str"
+      ]
+    }
+  }
+}
+`
+	if string(got) != want {
+		t.Fatalf("Save output =\n%s\nwant\n%s", got, want)
 	}
 }
 
