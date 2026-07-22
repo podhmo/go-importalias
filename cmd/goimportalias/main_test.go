@@ -154,6 +154,54 @@ func C() { f.Println("c") }
 `)
 }
 
+func TestCLIScanReportsInconsistentImportsWhenNoAliasWins(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import "fmt"
+
+func A() { fmt.Println("a") }
+`,
+		"b.go": `package p
+
+import f "fmt"
+
+func B() { f.Println("b") }
+`,
+		"c.go": `package p
+
+import "fmt"
+
+func C() { fmt.Println("c") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), `should use alias no alias, not "f"`) {
+		t.Fatalf("stdout = %q, want no-alias diagnostic", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertGoFileHashes(t, moduleDir, sourceHashes)
+	assertConfigContent(t, filepath.Join(moduleDir, "importalias.json"), `{
+  "packages": {
+    "example.com/vetfixture": {}
+  }
+}
+`)
+}
+
 func TestCLIScanReportsTie(t *testing.T) {
 	tool := buildVetTool(t)
 	moduleDir := writeVetModule(t, map[string]string{
@@ -405,9 +453,7 @@ func A() { fmt.Println("a") }
 	}
 	assertConfigContent(t, configPath, `{
   "packages": {
-    "example.com/vetfixture": {
-      "fmt": ""
-    }
+    "example.com/vetfixture": {}
   }
 }
 `)
