@@ -115,8 +115,7 @@ func TestSaveOmitsResolvedEmptyAliases(t *testing.T) {
         "s",
         "str"
       ]
-    },
-    "example.com/only-empty": {}
+    }
   }
 }
 `

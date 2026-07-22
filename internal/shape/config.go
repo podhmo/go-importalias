@@ -117,6 +117,9 @@ func fileForSave(f *File) *File {
 			}
 			filtered[path] = v
 		}
+		if len(filtered) == 0 {
+			continue
+		}
 		out.Packages[pkg] = filtered
 	}
 	return out
