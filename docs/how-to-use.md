@@ -36,16 +36,15 @@ If `-config` is omitted, the file is written at the module root:
 goimportalias -config ./importalias.json ./...
 ```
 
-The generated configuration records the alias decision for each import path in
-each package. For example:
+The generated configuration records non-empty alias decisions and unresolved
+multiple-candidate decisions for each package. For example:
 
 ```json
 {
   "packages": {
     "example.com/app": {
       "github.com/example/project/foo": "foo",
-      "github.com/example/project/bar": ["bar", "barv2"],
-      "github.com/example/project/baz": ""
+      "github.com/example/project/bar": ["bar", "barv2"]
     }
   }
 }
@@ -54,12 +53,41 @@ each package. For example:
 Values mean:
 
 - `"foo"`: use the explicit alias `foo`.
-- `""`: use no explicit alias.
 - `["bar", "barv2"]`: multiple candidates were found and no single alias was
   chosen automatically.
+- `""`: no explicit alias. The config reader understands this value, and it can
+  appear inside a multiple-candidate array, but generated resolved no-alias
+  entries are omitted to keep `importalias.json` small.
 
 `goimportalias` exits with status `1` when inconsistencies or unresolved
 candidates remain, even after writing the configuration.
+
+## Ignore packages
+
+Add `ignore` to `importalias.json` when some packages should be skipped by both
+scan and fix:
+
+```json
+{
+  "ignore": [
+    "example.com/app/generated/...",
+    "example.com/app/internal/legacy"
+  ],
+  "packages": {
+    "example.com/app": {
+      "github.com/example/project/foo": "foo"
+    }
+  }
+}
+```
+
+Ignore patterns use the same package-scope syntax as package decisions:
+
+- `example.com/app/internal/legacy`: exact package.
+- `example.com/app/generated/...`: that package and its subpackages.
+- `*`: every package.
+
+When the CLI updates `importalias.json`, existing `ignore` entries are preserved.
 
 ## Apply fixes
 

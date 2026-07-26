@@ -28,52 +28,6 @@ go vet -vettool=$(which goimportalias) ./...
 Vet mode is read-only: it reports import alias inconsistencies and never writes
 configuration files or source files.
 
-## Standalone CLI
-
-The standalone CLI uses flat flags and accepts target packages as positional
-arguments, for example `./...`.
-
-| Flag | Default | Description |
-|---|---|---|
-| `-fix` | `false` | Apply safe automatic fixes. |
-| `-config` | module-root `importalias.json` | Path to the configuration file. |
-| `-strict` | `false` | Treat majority-based decisions strictly. |
-| `-skip-generated` | `true` | Skip files marked with the standard generated-code comment. |
-
-Exit codes:
-
-- `0`: no inconsistencies remain, or all detected inconsistencies were fixed.
-- `1`: inconsistencies remain, including unresolved ties.
-- `2`: runtime error, such as I/O, invalid config, or package loading failure.
-
-## Configuration
-
-`importalias.json` stores per-package import alias decisions. A value is either
-a string alias, an empty string for no explicit alias, or an array of two or
-more aliases when a majority tie is unresolved.
-
-```json
-{
-  "packages": {
-    "*": {
-      "github.com/example/project/foo": "foo"
-    },
-    "github.com/example/app/...": {
-      "github.com/example/project/bar": ["bar", "barv2"]
-    },
-    "github.com/example/app/internal/api": {
-      "github.com/example/project/baz": ""
-    }
-  },
-  "ignore": [
-    "github.com/example/app/generated/..."
-  ]
-}
-```
-
-Package scopes are checked in this order: exact package, longest `...` prefix,
-then `*`.
-
 ## golangci-lint integration
 
 The root package exports the analyzer as `importalias.Analyzer`, so tools that
