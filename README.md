@@ -8,6 +8,9 @@ The main entry point is the `goimportalias` binary. It can run as a `go vet`
 vettool for analyzer-based checks, and also contains the standalone CLI mode
 used for config generation and source rewrites.
 
+See [How to use go-importalias](docs/how-to-use.md) for a walkthrough of
+scanning, configuration generation, and fixes.
+
 ## Installation
 
 ```sh
