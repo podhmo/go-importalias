@@ -16,8 +16,6 @@ go install github.com/podhmo/go-importalias/cmd/goimportalias@latest
 
 ## Use with go vet
 
-After installation, run the analyzer through `go vet`:
-
 ```sh
 go vet -vettool=$(which goimportalias) ./...
 ```
@@ -25,52 +23,10 @@ go vet -vettool=$(which goimportalias) ./...
 Vet mode is read-only: it reports import alias inconsistencies and never writes
 configuration files or source files.
 
-## Standalone CLI
+## Usage
 
-The standalone CLI uses flat flags and accepts target packages as positional
-arguments, for example `./...`.
-
-| Flag | Default | Description |
-|---|---|---|
-| `-fix` | `false` | Apply safe automatic fixes. |
-| `-config` | module-root `importalias.json` | Path to the configuration file. |
-| `-strict` | `false` | When generating config, keep all observed alias candidates instead of collapsing a majority. Cannot be combined with `-fix`. |
-| `-skip-generated` | `true` | Skip files marked with the standard generated-code comment. |
-
-Exit codes:
-
-- `0`: no inconsistencies remain, or all detected inconsistencies were fixed.
-- `1`: inconsistencies remain, including unresolved ties.
-- `2`: runtime error, such as I/O, invalid config, or package loading failure.
-
-## Configuration
-
-`importalias.json` stores per-package import alias decisions. A value is either
-a string alias, an empty string for no explicit alias, or an array of two or
-more aliases when candidates should remain unresolved (for example a tie, or
-`-strict` config generation).
-
-```json
-{
-  "packages": {
-    "*": {
-      "github.com/example/project/foo": "foo"
-    },
-    "github.com/example/app/...": {
-      "github.com/example/project/bar": ["bar", "barv2"]
-    },
-    "github.com/example/app/internal/api": {
-      "github.com/example/project/baz": ""
-    }
-  },
-  "ignore": [
-    "github.com/example/app/generated/..."
-  ]
-}
-```
-
-Package scopes are checked in this order: exact package, longest `...` prefix,
-then `*`.
+See [docs/how-to-use.md](docs/how-to-use.md) for standalone CLI flags,
+configuration, exit codes, and package ignore settings.
 
 ## golangci-lint integration
 
