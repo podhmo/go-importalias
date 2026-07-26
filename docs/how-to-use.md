@@ -44,7 +44,7 @@ multiple-candidate decisions for each package. For example:
   "packages": {
     "example.com/app": {
       "github.com/example/project/foo": "foo",
-      "github.com/example/project/bar": ["bar", "barv2"]
+      "github.com/example/project/bar": ["", "barv2"]
     }
   }
 }
@@ -53,7 +53,7 @@ multiple-candidate decisions for each package. For example:
 Values mean:
 
 - `"foo"`: use the explicit alias `foo`.
-- `["bar", "barv2"]`: multiple candidates were found and no single alias was
+- `["", "barv2"]`: multiple candidates were found and no single alias was
   chosen automatically.
 - `""`: no explicit alias. The config reader understands this value, and it can
   appear inside a multiple-candidate array, but generated resolved no-alias
@@ -121,7 +121,7 @@ For example, change this unresolved entry:
 {
   "packages": {
     "example.com/app": {
-      "github.com/example/project/bar": ["bar", "barv2"]
+      "github.com/example/project/bar": ["", "barv2"]
     }
   }
 }
@@ -133,7 +133,7 @@ to a single chosen alias:
 {
   "packages": {
     "example.com/app": {
-      "github.com/example/project/bar": "bar"
+      "github.com/example/project/bar": ""
     }
   }
 }
