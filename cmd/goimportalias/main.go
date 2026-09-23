@@ -55,7 +55,7 @@ func runCLI(args []string) int {
 	fs.StringVar(&opts.config, "config", "", "path to importalias.json")
 	fs.BoolVar(&opts.strict, "strict", false, "treat any multiple aliases for the same import path as an unresolved tie")
 	fs.BoolVar(&opts.skipGenerated, "skip-generated", true, "skip files carrying a generated-code marker")
-	fs.BoolVar(&opts.includeTests, "include-tests", false, "include *_test.go files (loads test variants via go/packages Tests)")
+	fs.BoolVar(&opts.includeTests, "include-tests", true, "include *_test.go files (loads test variants via go/packages Tests)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

@@ -26,8 +26,8 @@ type Options struct {
 
 	// IncludeTests, when false, drops *_test.go files so their imports
 	// never become Occurrences. The default is false here; the caller
-	// (analyzer/CLI) supplies the policy matching its host tool's default
-	// (go vet analyzes test files, go/packages does not load them).
+	// (analyzer/CLI) supplies the tool-wide policy (DEC-11.23: both entry
+	// points include test files by default, following go vet).
 	IncludeTests bool
 }
 

@@ -682,11 +682,10 @@ func C() { f.Println("c") }
 `)
 }
 
-// TestCLIScanExcludesTestFilesByDefault covers the go/packages default:
-// without -include-tests the CLI never loads *_test.go files, so an
-// inconsistency that only exists in a test file is not reported (FR-7.9's
-// target set is opt-in).
-func TestCLIScanExcludesTestFilesByDefault(t *testing.T) {
+// TestCLIScanExcludesTestFilesWhenDisabled covers -include-tests=false:
+// the CLI never loads *_test.go files, so an inconsistency that only exists
+// in a test file is not reported.
+func TestCLIScanExcludesTestFilesWhenDisabled(t *testing.T) {
 	tool := buildVetTool(t)
 	moduleDir := writeVetModule(t, map[string]string{
 		"a.go": `package p
@@ -711,14 +710,14 @@ func TestC(t *testing.T) { fmt.Println("c") }
 	})
 	sourceHashes := hashGoFiles(t, moduleDir)
 
-	cmd := exec.Command(tool, "./...")
+	cmd := exec.Command(tool, "-include-tests=false", "./...")
 	cmd.Dir = moduleDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if got := exitCode(err); got != 0 {
-		t.Fatalf("goimportalias exit = %d, want 0; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+		t.Fatalf("goimportalias -include-tests=false exit = %d, want 0; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q, want both empty", stdout.String(), stderr.String())
@@ -734,11 +733,11 @@ func TestC(t *testing.T) { fmt.Println("c") }
 `)
 }
 
-// TestCLIScanIncludeTestsReportsTestFileImports covers -include-tests:
-// internal test files join the package's majority vote, and external test
-// packages ("<pkg>_test") are scanned as packages of their own, while the
-// synthetic "<pkg>.test" binary is not.
-func TestCLIScanIncludeTestsReportsTestFileImports(t *testing.T) {
+// TestCLIScanIncludesTestFilesByDefault covers the DEC-11.23 default
+// (aligned with go vet): internal test files join the package's majority
+// vote, and external test packages ("<pkg>_test") are scanned as packages
+// of their own, while the synthetic "<pkg>.test" binary is not.
+func TestCLIScanIncludesTestFilesByDefault(t *testing.T) {
 	tool := buildVetTool(t)
 	moduleDir := writeVetModule(t, map[string]string{
 		"a.go": `package p
@@ -770,14 +769,14 @@ func TestD(t *testing.T) { _ = o.Getenv("x") }
 	})
 	sourceHashes := hashGoFiles(t, moduleDir)
 
-	cmd := exec.Command(tool, "-include-tests", "./...")
+	cmd := exec.Command(tool, "./...")
 	cmd.Dir = moduleDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if got := exitCode(err); got != 1 {
-		t.Fatalf("goimportalias -include-tests exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+		t.Fatalf("goimportalias exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
 	}
 	if !strings.Contains(stdout.String(), "p_test.go") ||
 		!strings.Contains(stdout.String(), `should use alias "f", not no alias`) {
