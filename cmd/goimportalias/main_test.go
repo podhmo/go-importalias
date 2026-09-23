@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
 func TestLooksLikeVetToolInvocation(t *testing.T) {
@@ -22,6 +24,8 @@ func TestLooksLikeVetToolInvocation(t *testing.T) {
 		{name: "flags handshake", args: []string{"goimportalias", "-flags"}, want: true},
 		{name: "cfg", args: []string{"goimportalias", filepath.Join(t.TempDir(), "vet.cfg")}, want: true},
 		{name: "json cfg", args: []string{"goimportalias", "-json", filepath.Join(t.TempDir(), "vet.cfg")}, want: true},
+		{name: "analyzer flag cfg", args: []string{"goimportalias", "-importalias.include_tests=false", filepath.Join(t.TempDir(), "vet.cfg")}, want: true},
+		{name: "json analyzer flag cfg", args: []string{"goimportalias", "-json", "-importalias.strict", filepath.Join(t.TempDir(), "vet.cfg")}, want: true},
 		{name: "no args", args: []string{"goimportalias"}, want: false},
 		{name: "cli arg", args: []string{"goimportalias", "./..."}, want: false},
 		{name: "multiple args", args: []string{"goimportalias", "-V=full", "extra"}, want: false},
@@ -676,6 +680,200 @@ func C() { f.Println("c") }
   }
 }
 `)
+}
+
+// TestCLIScanExcludesTestFilesByDefault covers the go/packages default:
+// without -include-tests the CLI never loads *_test.go files, so an
+// inconsistency that only exists in a test file is not reported (FR-7.9's
+// target set is opt-in).
+func TestCLIScanExcludesTestFilesByDefault(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import f "fmt"
+
+func B() { f.Println("b") }
+`,
+		"p_test.go": `package p
+
+import "fmt"
+import "testing"
+
+func TestC(t *testing.T) { fmt.Println("c") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 0 {
+		t.Fatalf("goimportalias exit = %d, want 0; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want both empty", stdout.String(), stderr.String())
+	}
+	assertGoFileHashes(t, moduleDir, sourceHashes)
+	assertConfigContent(t, filepath.Join(moduleDir, "importalias.json"), `{
+  "packages": {
+    "example.com/vetfixture": {
+      "fmt": "f"
+    }
+  }
+}
+`)
+}
+
+// TestCLIScanIncludeTestsReportsTestFileImports covers -include-tests:
+// internal test files join the package's majority vote, and external test
+// packages ("<pkg>_test") are scanned as packages of their own, while the
+// synthetic "<pkg>.test" binary is not.
+func TestCLIScanIncludeTestsReportsTestFileImports(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import f "fmt"
+
+func B() { f.Println("b") }
+`,
+		"p_test.go": `package p
+
+import "fmt"
+import "testing"
+
+func TestC(t *testing.T) { fmt.Println("c") }
+`,
+		"ext_test.go": `package p_test
+
+import o "os"
+import "testing"
+
+func TestD(t *testing.T) { _ = o.Getenv("x") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	cmd := exec.Command(tool, "-include-tests", "./...")
+	cmd.Dir = moduleDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if got := exitCode(err); got != 1 {
+		t.Fatalf("goimportalias -include-tests exit = %d, want 1; stdout=%q stderr=%q err=%v", got, stdout.String(), stderr.String(), err)
+	}
+	if !strings.Contains(stdout.String(), "p_test.go") ||
+		!strings.Contains(stdout.String(), `should use alias "f", not no alias`) {
+		t.Fatalf("stdout = %q, want importalias diagnostic at p_test.go", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertGoFileHashes(t, moduleDir, sourceHashes)
+	assertConfigContent(t, filepath.Join(moduleDir, "importalias.json"), `{
+  "packages": {
+    "example.com/vetfixture": {
+      "fmt": "f"
+    },
+    "example.com/vetfixture_test": {
+      "os": "o"
+    }
+  }
+}
+`)
+}
+
+// TestVetToolIncludeTestsFlag covers the analyzer flag matching go vet's
+// default: test files are analyzed by default, and
+// -importalias.include_tests=false excludes them.
+func TestVetToolIncludeTestsFlag(t *testing.T) {
+	tool := buildVetTool(t)
+	moduleDir := writeVetModule(t, map[string]string{
+		"a.go": `package p
+
+import f "fmt"
+
+func A() { f.Println("a") }
+`,
+		"b.go": `package p
+
+import f "fmt"
+
+func B() { f.Println("b") }
+`,
+		"p_test.go": `package p
+
+import "fmt"
+import "testing"
+
+func TestC(t *testing.T) { fmt.Println("c") }
+`,
+	})
+	sourceHashes := hashGoFiles(t, moduleDir)
+
+	t.Run("default includes test files", func(t *testing.T) {
+		cmd := exec.Command("go", "vet", "-vettool="+tool, "./...")
+		cmd.Dir = moduleDir
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err == nil {
+			t.Fatalf("go vet succeeded, want non-zero exit; stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatalf("go vet failed unexpectedly: %v", err)
+		}
+		if !strings.Contains(stderr.String(), "p_test.go") {
+			t.Fatalf("stderr = %q, want importalias diagnostic at p_test.go", stderr.String())
+		}
+	})
+
+	t.Run("include_tests=false excludes test files", func(t *testing.T) {
+		cmd := exec.Command("go", "vet", "-vettool="+tool, "-importalias.include_tests=false", "./...")
+		cmd.Dir = moduleDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("go vet failed: %v\n%s", err, out)
+		}
+	})
+
+	assertNoVetWrites(t, moduleDir, sourceHashes)
+}
+
+func TestSelectScanPackages(t *testing.T) {
+	plain := &packages.Package{PkgPath: "example.com/p", Name: "p"}
+	augmented := &packages.Package{PkgPath: "example.com/p", Name: "p", ForTest: "example.com/p"}
+	external := &packages.Package{PkgPath: "example.com/p_test", Name: "p_test", ForTest: "example.com/p"}
+	testMain := &packages.Package{PkgPath: "example.com/p.test", Name: "main"}
+
+	got := selectScanPackages([]*packages.Package{plain, augmented, external, testMain})
+	if len(got) != 2 {
+		t.Fatalf("selectScanPackages returned %d packages, want 2: %+v", len(got), got)
+	}
+	if got[0] != augmented {
+		t.Fatalf("got[0].PkgPath = %q ForTest = %q, want the test-augmented variant of example.com/p", got[0].PkgPath, got[0].ForTest)
+	}
+	if got[1] != external {
+		t.Fatalf("got[1].PkgPath = %q, want %q", got[1].PkgPath, external.PkgPath)
+	}
 }
 
 func buildVetTool(t *testing.T) string {
