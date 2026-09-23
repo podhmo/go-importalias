@@ -158,3 +158,51 @@ func G() { fmt.Println("g") }
 		}
 	})
 }
+
+// TestFromFiles_IncludeTests covers the *_test.go filter: with
+// IncludeTests=false test files never become Occurrences, with true their
+// imports are collected like any other file's.
+func TestFromFiles_IncludeTests(t *testing.T) {
+	const regular = `package p
+
+import f "fmt"
+
+func F() { f.Println("p") }
+`
+	const test = `package p
+
+import g "os"
+
+func TestG() { g.Getenv("x") }
+`
+	fset := token.NewFileSet()
+	regularFile, err := parser.ParseFile(fset, "p.go", regular, 0)
+	if err != nil {
+		t.Fatalf("ParseFile(regular): %v", err)
+	}
+	testFile, err := parser.ParseFile(fset, "p_test.go", test, 0)
+	if err != nil {
+		t.Fatalf("ParseFile(test): %v", err)
+	}
+	files := []*ast.File{regularFile, testFile}
+
+	t.Run("exclude", func(t *testing.T) {
+		occs := scan.FromFiles(fset, files, nil, scan.Options{Package: "p", IncludeTests: false})
+		if len(occs) != 1 {
+			t.Fatalf("with IncludeTests=false got %d occurrences, want 1: %+v", len(occs), occs)
+		}
+		if got, want := occs[0].Path, "fmt"; got != want {
+			t.Fatalf("occs[0].Path = %q, want %q (test file's import must be excluded)", got, want)
+		}
+	})
+
+	t.Run("include", func(t *testing.T) {
+		occs := scan.FromFiles(fset, files, nil, scan.Options{Package: "p", IncludeTests: true})
+		if len(occs) != 2 {
+			t.Fatalf("with IncludeTests=true got %d occurrences, want 2: %+v", len(occs), occs)
+		}
+		if got, want := occs[1].IsTest, true; got != want {
+			t.Fatalf("occs[1].IsTest = %v, want %v", got, want)
+		}
+	})
+}

@@ -27,11 +27,24 @@ func main() {
 }
 
 func looksLikeVetToolInvocation(args []string) bool {
-	if len(args) == 2 {
-		arg := args[1]
-		return arg == "-V=full" || arg == "-flags" || strings.HasSuffix(arg, ".cfg")
+	if len(args) < 2 {
+		return false
 	}
-	return len(args) == 3 && args[1] == "-json" && strings.HasSuffix(args[2], ".cfg")
+	if len(args) == 2 && (args[1] == "-V=full" || args[1] == "-flags") {
+		return true
+	}
+	// The unitchecker protocol puts driver flags (-json) and analyzer flags
+	// (e.g. -importalias.include_tests=false) before the *.cfg unit file,
+	// so flag-shaped arguments may precede it.
+	if !strings.HasSuffix(args[len(args)-1], ".cfg") {
+		return false
+	}
+	for _, arg := range args[1 : len(args)-1] {
+		if !strings.HasPrefix(arg, "-") {
+			return false
+		}
+	}
+	return true
 }
 
 func runCLI(args []string) int {
@@ -42,6 +55,7 @@ func runCLI(args []string) int {
 	fs.StringVar(&opts.config, "config", "", "path to importalias.json")
 	fs.BoolVar(&opts.strict, "strict", false, "treat any multiple aliases for the same import path as an unresolved tie")
 	fs.BoolVar(&opts.skipGenerated, "skip-generated", true, "skip files carrying a generated-code marker")
+	fs.BoolVar(&opts.includeTests, "include-tests", true, "include *_test.go files (loads test variants via go/packages Tests)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -69,7 +83,7 @@ func runCLI(args []string) int {
 		return 2
 	}
 
-	fset, pkgs, err := loadPackages(cwd, patterns)
+	fset, pkgs, err := loadPackages(cwd, patterns, opts.includeTests)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goimportalias: load packages: %v\n", err)
 		return 2
@@ -83,7 +97,7 @@ func runCLI(args []string) int {
 			fmt.Fprintf(os.Stderr, "goimportalias: %v\n", err)
 			return 2
 		}
-		fset, pkgs, err = loadPackages(cwd, patterns)
+		fset, pkgs, err = loadPackages(cwd, patterns, opts.includeTests)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "goimportalias: reload packages after fix: %v\n", err)
 			return 2
@@ -102,6 +116,7 @@ func runCLI(args []string) int {
 		occs := scan.FromFiles(fset, pkg.Syntax, pkg.TypesInfo, scan.Options{
 			Package:       pkg.PkgPath,
 			SkipGenerated: opts.skipGenerated,
+			IncludeTests:  opts.includeTests,
 		})
 		decisions, collisions, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: opts.strict})
 		fresh.Packages[pkg.PkgPath] = decisionsToConfig(decisions)
@@ -125,17 +140,19 @@ func runCLI(args []string) int {
 	return 0
 }
 
-func loadPackages(cwd string, patterns []string) (*token.FileSet, []*packages.Package, error) {
+func loadPackages(cwd string, patterns []string, includeTests bool) (*token.FileSet, []*packages.Package, error) {
 	fset := token.NewFileSet()
 	pkgs, err := packages.Load(&packages.Config{
-		Dir:  cwd,
-		Fset: fset,
+		Dir:   cwd,
+		Fset:  fset,
+		Tests: includeTests,
 		Mode: packages.NeedName |
 			packages.NeedTypes |
 			packages.NeedTypesInfo |
 			packages.NeedSyntax |
 			packages.NeedImports |
-			packages.NeedDeps,
+			packages.NeedDeps |
+			packages.NeedForTest,
 	}, patterns...)
 	if err != nil {
 		return nil, nil, err
@@ -143,7 +160,33 @@ func loadPackages(cwd string, patterns []string) (*token.FileSet, []*packages.Pa
 	if len(pkgs) == 0 {
 		return nil, nil, fmt.Errorf("no packages matched")
 	}
-	return fset, pkgs, nil
+	return fset, selectScanPackages(pkgs), nil
+}
+
+// selectScanPackages reduces what packages.Load returns when Tests is on to
+// the packages worth scanning: it drops the synthetic test binaries
+// ("<pkg>.test", the generated package main that only exists in the build
+// cache) and, for a PkgPath reported both as the plain package and its
+// test-augmented variant, keeps the augmented one — its file list is the
+// strict superset (non-test files plus internal *_test.go files).
+// External test packages ("<pkg>_test") are kept as packages of their own.
+func selectScanPackages(pkgs []*packages.Package) []*packages.Package {
+	out := make([]*packages.Package, 0, len(pkgs))
+	byPath := make(map[string]int, len(pkgs)) // PkgPath -> index into out
+	for _, pkg := range pkgs {
+		if pkg.Name == "main" && strings.HasSuffix(pkg.PkgPath, ".test") {
+			continue
+		}
+		if i, ok := byPath[pkg.PkgPath]; ok {
+			if pkg.ForTest != "" {
+				out[i] = pkg // prefer the test-augmented variant
+			}
+			continue
+		}
+		byPath[pkg.PkgPath] = len(out)
+		out = append(out, pkg)
+	}
+	return out
 }
 
 func applyFixes(fset *token.FileSet, pkgs []*packages.Package, cfg *shape.File, opts cliOptions) error {
@@ -154,6 +197,7 @@ func applyFixes(fset *token.FileSet, pkgs []*packages.Package, cfg *shape.File, 
 		occs := scan.FromFiles(fset, pkg.Syntax, pkg.TypesInfo, scan.Options{
 			Package:       pkg.PkgPath,
 			SkipGenerated: opts.skipGenerated,
+			IncludeTests:  opts.includeTests,
 		})
 		decisions, collisions, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: opts.strict})
 		for _, file := range pkg.Syntax {
@@ -179,6 +223,7 @@ type cliOptions struct {
 	config        string
 	strict        bool
 	skipGenerated bool
+	includeTests  bool
 }
 
 func decisionsToConfig(decisions []shape.Decision) map[string]shape.AliasValue {

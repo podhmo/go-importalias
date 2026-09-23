@@ -28,11 +28,18 @@ var Analyzer = &analysis.Analyzer{
 var skipGenerated = true
 var strictFlag = false
 
+// includeTests backs the -importalias.include_tests flag. go vet analyzes
+// *_test.go files by default, so it defaults to true; set it false to
+// exclude test files from the analysis.
+var includeTests = true
+
 func init() {
 	Analyzer.Flags.BoolVar(&skipGenerated, "skip_generated", true,
 		"skip files carrying a generated-code marker (// Code generated ... DO NOT EDIT.)")
 	Analyzer.Flags.BoolVar(&strictFlag, "strict", false,
 		"treat any multiple aliases for the same import path as an unresolved tie")
+	Analyzer.Flags.BoolVar(&includeTests, "include_tests", true,
+		"include *_test.go files in the analysis")
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -47,6 +54,7 @@ func run(pass *analysis.Pass) (any, error) {
 	occs := scan.FromFiles(pass.Fset, pass.Files, pass.TypesInfo, scan.Options{
 		Package:       pass.Pkg.Path(),
 		SkipGenerated: skipGenerated,
+		IncludeTests:  includeTests,
 	})
 	decisions, collisions, duplicates := decide.Decide(occs, cfg, decide.Options{Strict: strictFlag})
 

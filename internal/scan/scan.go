@@ -23,6 +23,12 @@ type Options struct {
 	// become Occurrences (FR-5.7). The default is false here; the caller
 	// (analyzer/CLI) supplies the FR-5.7 "skip by default" policy.
 	SkipGenerated bool
+
+	// IncludeTests, when false, drops *_test.go files so their imports
+	// never become Occurrences. The default is false here; the caller
+	// (analyzer/CLI) supplies the tool-wide policy (DEC-11.23: both entry
+	// points include test files by default, following go vet).
+	IncludeTests bool
 }
 
 // FromFiles walks the import declarations of files directly via
@@ -48,6 +54,9 @@ func FromFiles(fset *token.FileSet, files []*ast.File, typesInfo *types.Info, op
 		}
 		filename := fset.Position(file.Pos()).Filename
 		isTest := strings.HasSuffix(filename, "_test.go")
+		if isTest && !opts.IncludeTests {
+			continue
+		}
 		for _, imp := range file.Imports {
 			path, err := strconv.Unquote(imp.Path.Value)
 			if err != nil {

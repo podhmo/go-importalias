@@ -156,3 +156,11 @@ uses to the selected alias.
 | `-config` | module-root `importalias.json` | Read and write configuration at a custom path. |
 | `-strict` | `false` | Treat multiple observed aliases as unresolved instead of using a majority decision. |
 | `-skip-generated` | `true` | Skip files with the standard generated-code marker. |
+| `-include-tests` | `true` | Include `*_test.go` files in the scan. Loads test-variant packages, so internal test files join the package's majority vote and external `*_test` packages are scanned as packages of their own. |
+
+`*_test.go` files are analyzed by default in both entry points, following
+`go vet`'s behavior: pass `-include-tests=false` to the CLI or
+`-importalias.include_tests=false` under `go vet` to exclude them. The CLI
+loads test files via `go/packages`' `Tests` option, so internal test files
+vote in the package's majority and external `*_test` packages are scanned
+as packages of their own.
